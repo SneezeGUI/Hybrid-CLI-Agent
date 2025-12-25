@@ -55,6 +55,13 @@ temp/
 
 # Context persistence files (may contain sensitive data)
 HYBRID_CONTEXT.md
+memory-bank/
+memory-bank/**
+
+# Agent output files (may contain sensitive project data)
+.gemini-worker-outputs/
+gemini-worker-outputs/
+agent-outputs/
 
 # Response cache (runtime generated)
 .response-cache/
