@@ -1,0 +1,50 @@
+{
+  "name": "hybrid-cli-agent",
+  "version": "0.3.3",
+  "description": "Multi-agent CLI orchestrator combining Claude Code, Gemini CLI, and OpenRouter with 400+ AI models",
+  "type": "module",
+  "main": "src/orchestrator/index.js",
+  "bin": {
+    "hybrid": "./bin/hybrid.js",
+    "hybrida": "./bin/hybrid.js"
+  },
+  "scripts": {
+    "start": "node src/mcp/gemini-mcp-server.js",
+    "dev": "node --watch src/mcp/gemini-mcp-server.js",
+    "test": "node --test tests/*.test.js",
+    "cli": "node bin/hybrid.js",
+    "mcp": "node src/mcp/gemini-mcp-server.js",
+    "config": "node bin/config.js",
+    "setup": "node bin/setup.js",
+    "setup:web": "node bin/setup-web.js"
+  },
+  "keywords": [
+    "claude",
+    "gemini",
+    "openrouter",
+    "cli",
+    "agent",
+    "mcp",
+    "orchestrator",
+    "multi-agent",
+    "ai-collaboration"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "glob": "^10.3.10",
+    "inquirer": "^13.1.0",
+    "open": "^11.0.0",
+    "ora": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

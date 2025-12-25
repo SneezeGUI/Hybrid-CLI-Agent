@@ -1,0 +1,78 @@
+# Dependencies
+node_modules/
+
+# Local Claude settings (user-specific)
+.claude/
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
+
+# IDE and editor settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Build output
+dist/
+build/
+out/
+
+# Cache directories
+.cache/
+.npm/
+.eslintcache
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Context persistence files (may contain sensitive data)
+HYBRID_CONTEXT.md
+
+# Response cache (runtime generated)
+.response-cache/
+response-cache.json
+
+# Conversation storage (runtime generated)
+.conversations/
+
+# Package lock (optional - uncomment if you want to track it)
+# package-lock.json
+
+# Debug files
+*.debug
+
+# Credentials (never commit these)
+credentials.json
+*.pem
+*.key
+*.crt
+*.p12
+service-account*.json
