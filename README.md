@@ -79,11 +79,39 @@ Claude will see the `gemini-worker` tools and delegate the heavy reading to Gemi
 
 | Provider | Best For | Setup | Cost |
 |----------|----------|-------|------|
-| **Gemini (OAuth)** | **Heavy Reading** | `gemini auth login` | **FREE** (60 RPM / 1k RPD)* |
+| **Gemini (OAuth)** | **Heavy Reading** | `gemini auth login` | **FREE** (within limits)* |
 | **Claude** | **Complex Reasoning** | `claude login` | ~$3-15 / 1M tokens |
-| **OpenRouter** | **Variety / Debates** | API Key | Varies (Cheap to Expensive) |
+| **OpenRouter** | **Variety / Debates** | API Key | Varies by model |
 
-*\*Gemini Free Tier limits apply to Google Cloud Pro/Ultra subscribers. API Key and Vertex AI options also available.*
+### Gemini Free Tier Limits (December 2025)
+
+The free tier is available via OAuth (`gemini auth login`) - no credit card required.
+
+| Model | RPM | RPD | Best For |
+|-------|-----|-----|----------|
+| **gemini-2.5-flash** | 15 | 1,500 | General tasks, file reading |
+| **gemini-2.5-flash-lite** | 15 | 1,500 | High-frequency, low-latency |
+| **gemini-2.5-pro** | 2 | 50 | Complex reasoning (limited) |
+| **gemini-3-pro-preview** | 2 | 50 | Frontier model (limited) |
+
+> **Google One AI Premium ($19.99/mo):** ~5x higher limits + priority access to Gemini 3 Pro.
+
+### When Free Limits Are Hit
+
+The system automatically falls back when you exceed free tier limits:
+
+1. **Primary:** `gemini-2.5-flash` (15 RPM / 1,500 RPD) - handles most tasks
+2. **Fallback:** `gemini-2.5-flash-lite` if Flash quota exhausted
+3. **Paid API:** If all free quotas hit, falls back to API key billing:
+
+| Model | Input ($/1M) | Output ($/1M) |
+|-------|--------------|---------------|
+| gemini-2.5-flash-lite | $0.075 | $0.30 |
+| gemini-2.5-flash | $0.10 | $0.40 |
+| gemini-2.5-pro | $1.25-2.50 | $5.00-10.00 |
+| gemini-3-pro | $2.50 | $10.00 |
+
+> 💡 **Tip:** For most dev work, the free tier (1,500 requests/day) is plenty. You'll only hit paid API if doing heavy batch processing.
 
 ---
 
