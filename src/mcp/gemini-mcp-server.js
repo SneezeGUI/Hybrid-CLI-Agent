@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Gemini Worker MCP Server
+ * Hybrid Agent MCP Server
  *
- * Exposes Gemini CLI as MCP tools for Claude Code to use.
+ * Exposes Hybrid Agent tools for Claude Code to use.
  * This enables the "Context Arbitrage" pattern:
  * - Claude (expensive) never sees raw massive files
  * - Gemini (free with Pro subscription) does the heavy lifting
@@ -36,11 +36,11 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getConversationManager, MessageRole, ConversationState } from '../services/conversation-manager.js';
+import { getConversationManager, MessageRole } from '../services/conversation-manager.js';
 import { processPrompt, hasFileReferences } from '../utils/prompt-processor.js';
 import { getResponseCache } from '../services/response-cache.js';
 import { applyEnvFile } from '../utils/env.js';
-import { AICollaborationEngine, CollaborationMode, DebateStyle, ConsensusMethod } from '../services/ai-collaboration.js';
+import { AICollaborationEngine } from '../services/ai-collaboration.js';
 
 // Get project root from script location (works for system-wide MCP use)
 const __filename = fileURLToPath(import.meta.url);
@@ -55,19 +55,15 @@ import {
   validateDirectory,
   sanitizeGlobPatterns,
   sanitizeGitPatterns,
-  spawnWithTimeout,
   TIMEOUTS,
   isWriteAllowed,
   safeSpawn,
-  resolveCommand,
-  safeSpawnWithTimeout,
   isAgentModeEnabled,
 } from '../utils/security.js';
 import {
   GEMINI_MODELS,
   GEMINI_PRICING,
   RATE_LIMITS,
-  OPENROUTER_PRICING,
 } from '../config/index.js';
 
 // ============================================================================
@@ -201,22 +197,6 @@ function resetExpiredAuthFailures() {
       console.error(`[gemini-worker] Auth failure for ${method} expired, will retry`);
     }
   }
-}
-
-/**
- * Reset all auth failures (for manual recovery)
- */
-function resetAllAuthFailures() {
-  AUTH_CONFIG.authFailures = {};
-  AUTH_CONFIG.activeMethod = null;
-  console.error('[gemini-worker] All auth failures reset');
-}
-
-/**
- * Legacy function for backwards compatibility
- */
-function detectAuthMethod() {
-  return getActiveAuthMethod();
 }
 
 // ============================================================================
@@ -626,7 +606,6 @@ async function runGeminiCli(prompt, options = {}) {
   const {
     model: requestedModel = null,
     toolName = '',  // For smart model selection
-    noStream = true,
     workDir = process.cwd(),
     useCache = true,  // Enable caching by default
     cacheTTL = null,  // Use default TTL if not specified
@@ -664,7 +643,7 @@ async function runGeminiCli(prompt, options = {}) {
     }
   }
 
-  const executeRequest = async (selectedModel, authMethod = null, isRetry = false) => {
+  const executeRequest = async (selectedModel, authMethod = null, _isRetry = false) => {
     return new Promise((resolve, reject) => {
       // Use stdin to pass prompt (avoids command line length limits on Windows)
       // Use JSON output format for structured responses with token tracking
@@ -718,7 +697,15 @@ async function runGeminiCli(prompt, options = {}) {
           let tokens = { input: 0, output: 0 };
 
           try {
-            const jsonResponse = JSON.parse(stdout);
+            // Try to extract JSON blob even if there's warning text before/after it
+            // This handles cases where CLI outputs warnings before the JSON response
+            let jsonText = stdout;
+            const jsonMatch = stdout.match(/\{[\s\S]*}/);
+            if (jsonMatch) {
+              jsonText = jsonMatch[0];
+            }
+
+            const jsonResponse = JSON.parse(jsonText);
             response = jsonResponse.response || stdout.trim();
             tokens = extractTokenStats(jsonResponse.stats);
 
@@ -969,11 +956,22 @@ async function readFilesFromPatterns(patterns, baseDir = process.cwd(), options 
           results.push({ path: relativePath, content });
           totalSize += content.length;
         } catch (e) {
-          // Skip unreadable files
+          // Report unreadable files instead of silently skipping
+          const relativePath = filepath.replace(baseDir, '').replace(/^[\/\\]/, '');
+          results.push({
+            path: relativePath,
+            content: `[ERROR: Could not read file - ${e.code || e.message}]`,
+            error: true,
+          });
         }
       }
     } catch (e) {
-      // Skip invalid patterns
+      // Report invalid patterns instead of silently skipping
+      results.push({
+        path: pattern,
+        content: `[ERROR: Invalid pattern or glob error - ${e.message}]`,
+        error: true,
+      });
     }
   }
 
@@ -986,7 +984,7 @@ async function readFilesFromPatterns(patterns, baseDir = process.cwd(), options 
 
 const server = new Server(
   {
-    name: 'gemini-worker',
+    name: 'hybrid-agent',
     version: '1.0.0',
   },
   {
@@ -2084,7 +2082,7 @@ CRITICAL RULES:
           .replace(/^```[\w]*\n?/gm, '')
           .replace(/```$/gm, '')
           // Remove cached response marker
-          .replace(/_\[cached response\]_$/g, '')
+          .replace(/_\[cached response]_$/g, '')
           .trim();
 
         // Remove preamble text before actual code
@@ -2848,7 +2846,7 @@ ${modelBreakdown}
         }).join('\n');
 
         const config = {
-          version: '0.3.3',  // JSON output + token tracking
+          version: '0.3.4',  // Agent output fixes + auto cleanup
           auth: {
             method: AUTH_CONFIG.method,
             geminiApiKey: maskValue(process.env.GEMINI_API_KEY),
@@ -3443,7 +3441,7 @@ process.on('uncaughtException', (error) => {
   // Log but don't exit immediately - allow graceful shutdown
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason, _promise) => {
   console.error('[gemini-worker] Unhandled rejection:', reason);
   // Log but don't exit - try to keep server running
 });

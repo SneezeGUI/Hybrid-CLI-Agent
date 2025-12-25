@@ -259,12 +259,14 @@ npm run mcp
 For system-wide Claude Code integration, add to your `settings.json`:
 
 ```json
-"gemini-worker": {
-  "type": "stdio",
-  "command": "node",
-  "args": ["C:\\path\\to\\gemini-cli-mcp-server\\src\\mcp\\gemini-mcp-server.js"],
-  "env": {
-    "GEMINI_WORKER_ROOT": "C:\\path\\to\\gemini-cli-mcp-server"
+{
+  "gemini-worker": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["C:\\path\\to\\gemini-cli-mcp-server\\src\\mcp\\gemini-mcp-server.js"],
+    "env": {
+      "GEMINI_WORKER_ROOT": "C:\\path\\to\\gemini-cli-mcp-server"
+    }
   }
 }
 ```
@@ -306,7 +308,18 @@ The system now automatically selects the optimal Gemini model based on task comp
 - **User override**: Explicitly specified models take precedence
 - **.env file support**: Configuration via `.env`, `.env.local`, or `~/.env.gemini`
 
-## Recent Changes (v0.3.3)
+## Recent Changes (v0.3.4)
+
+| Feature | Description |
+|---------|-------------|
+| Agent Output Fix | Fixed unbounded output growth causing "exceeds maximum tokens" errors |
+| Full Output Streaming | Agent output now streams to disk - full output always preserved |
+| Session Memory Fix | Tool call data truncated to prevent session memory bloat |
+| Silent Failure Fix | File read errors now reported instead of silently skipped |
+| JSON Parse Fix | CLI warning output no longer breaks JSON response parsing |
+| Auto Cleanup | Old output files (>30 days) automatically cleaned up |
+
+## Previous Changes (v0.3.3)
 
 | Feature | Description |
 |---------|-------------|

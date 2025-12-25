@@ -2,11 +2,11 @@
  * Tests for tool-handlers base utilities
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { existsSync, unlinkSync, readFileSync, mkdirSync, rmdirSync } from 'fs';
+import { existsSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { homedir, tmpdir } from 'os';
+import { homedir } from 'os';
 import {
   success,
   error,
@@ -761,11 +761,17 @@ describe('OUTPUT_LIMITS config', () => {
   });
 
   it('should have token limits that correspond to character limits', () => {
-    // MCP_SOFT_LIMIT should be approximately MCP_TOKEN_LIMIT * CHARS_PER_TOKEN
-    const expectedSoftLimit = OUTPUT_LIMITS.MCP_TOKEN_LIMIT * OUTPUT_LIMITS.CHARS_PER_TOKEN;
+    // MCP_HARD_LIMIT should be approximately MCP_TOKEN_LIMIT * CHARS_PER_TOKEN
+    const expectedHardLimit = OUTPUT_LIMITS.MCP_TOKEN_LIMIT * OUTPUT_LIMITS.CHARS_PER_TOKEN;
     assert.ok(
-      Math.abs(OUTPUT_LIMITS.MCP_SOFT_LIMIT - expectedSoftLimit) < 10000,
-      'MCP_SOFT_LIMIT should roughly match MCP_TOKEN_LIMIT * CHARS_PER_TOKEN'
+      OUTPUT_LIMITS.MCP_HARD_LIMIT <= expectedHardLimit,
+      'MCP_HARD_LIMIT should not exceed MCP_TOKEN_LIMIT * CHARS_PER_TOKEN'
+    );
+    // MCP_SOFT_LIMIT is intentionally lower to trigger summarization early
+    // It should be at least 20000 chars (~5K tokens) for meaningful content
+    assert.ok(
+      OUTPUT_LIMITS.MCP_SOFT_LIMIT >= 20000,
+      'MCP_SOFT_LIMIT should be at least 20000 chars for meaningful content'
     );
   });
 });

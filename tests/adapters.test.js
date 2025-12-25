@@ -107,21 +107,32 @@ describe('GeminiCliAdapter', () => {
   });
 
   test('should detect auth method from environment', () => {
+    // Save original env
+    const originalGeminiKey = process.env.GEMINI_API_KEY;
+    const originalVertexKey = process.env.VERTEX_API_KEY;
+
+    // Clear env for default test
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.VERTEX_API_KEY;
+
     // Test OAuth (default)
     const oauthAdapter = new GeminiCliAdapter();
     assert.strictEqual(oauthAdapter.auth.method, 'oauth');
     
     // Test API key detection
-    const originalKey = process.env.GEMINI_API_KEY;
     process.env.GEMINI_API_KEY = 'test-key';
     const apiAdapter = new GeminiCliAdapter();
     assert.strictEqual(apiAdapter.auth.method, 'api-key');
     
-    // Cleanup
-    if (originalKey) {
-      process.env.GEMINI_API_KEY = originalKey;
+    // Cleanup/Restore
+    if (originalGeminiKey) {
+      process.env.GEMINI_API_KEY = originalGeminiKey;
     } else {
       delete process.env.GEMINI_API_KEY;
+    }
+
+    if (originalVertexKey) {
+      process.env.VERTEX_API_KEY = originalVertexKey;
     }
   });
 

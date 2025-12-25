@@ -5,12 +5,83 @@
  */
 
 import { spawn } from 'child_process';
-import { success, error, formatted, validateRequired, processLargeOutput } from '../base.js';
+import { createWriteStream, mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+import { success, error, validateRequired, processLargeOutput } from '../base.js';
 import {
   getAgentSessionManager,
   SessionStatus,
 } from '../../../services/agent-session-manager.js';
 import { OUTPUT_LIMITS } from '../../../config/timeouts.js';
+
+/**
+ * Get or create the output directory for full agent output files
+ * @returns {string} Path to output directory
+ */
+function getAgentOutputDir() {
+  const baseDir = join(homedir(), '.claude', 'gemini-worker-outputs');
+  if (!existsSync(baseDir)) {
+    mkdirSync(baseDir, { recursive: true });
+  }
+  return baseDir;
+}
+
+/** Track last cleanup time to avoid running too frequently */
+let lastCleanupTime = 0;
+const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Run at most once per day
+const MAX_FILE_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/**
+ * Clean up old output files (older than 30 days)
+ * Runs asynchronously and doesn't block agent tasks
+ */
+async function cleanupOldOutputFiles() {
+  const now = Date.now();
+
+  // Skip if we ran cleanup recently
+  if (now - lastCleanupTime < CLEANUP_INTERVAL_MS) {
+    return;
+  }
+  lastCleanupTime = now;
+
+  try {
+    const { readdir, stat, unlink } = await import('fs/promises');
+    const outputDir = getAgentOutputDir();
+    const files = await readdir(outputDir);
+
+    let deletedCount = 0;
+    let deletedBytes = 0;
+
+    for (const file of files) {
+      // Only clean up agent output files
+      if (!file.startsWith('agent-') && !file.startsWith('gemini-')) {
+        continue;
+      }
+
+      const filePath = join(outputDir, file);
+      try {
+        const fileStat = await stat(filePath);
+        const fileAge = now - fileStat.mtimeMs;
+
+        if (fileAge > MAX_FILE_AGE_MS) {
+          deletedBytes += fileStat.size;
+          await unlink(filePath);
+          deletedCount++;
+        }
+      } catch (e) {
+        // Ignore errors for individual files (may be in use, etc.)
+      }
+    }
+
+    if (deletedCount > 0) {
+      console.log(`[Agent] Cleaned up ${deletedCount} old output files (${(deletedBytes / 1024 / 1024).toFixed(1)}MB)`);
+    }
+  } catch (e) {
+    // Silently ignore cleanup errors - non-critical operation
+    console.error('[Agent] Cleanup error:', e.message);
+  }
+}
 
 /**
  * Parse stream-json events from Gemini agent mode
@@ -30,17 +101,31 @@ function parseAgentEvent(line) {
  * Format successful agent result for display
  * Handles large outputs by truncating and saving to file
  * @param {Object} summary - Session summary from AgentSessionManager
+ * @param {Object} [outputInfo] - Information about output files
+ * @param {string} [outputInfo.fullOutputPath] - Path to full output file
+ * @param {number} [outputInfo.fullOutputSize] - Size of full output in bytes
+ * @param {boolean} [outputInfo.truncated] - Whether MCP response was truncated
  * @returns {Object} Formatted result with text and metadata
  */
-function formatAgentResult(summary) {
+function formatAgentResult(summary, outputInfo = {}) {
+  const { fullOutputPath, fullOutputSize, truncated } = outputInfo;
+
   const headerLines = [
     '## Agent Task Completed',
     '',
     `**Session ID:** \`${summary.id}\``,
     `**Duration:** ${summary.durationFormatted}`,
     `**Iterations:** ${summary.iterations}/${summary.maxIterations}`,
-    '',
   ];
+
+  // Add full output file info if available
+  if (fullOutputPath) {
+    headerLines.push(`**Full Output:** \`${fullOutputPath}\` (${(fullOutputSize / 1024).toFixed(1)}KB)`);
+    if (truncated) {
+      headerLines.push(`**Note:** MCP response truncated - use Read tool on full output file for complete details`);
+    }
+  }
+  headerLines.push('');
 
   const footerLines = [];
 
@@ -167,7 +252,7 @@ function formatAgentResult(summary) {
 /**
  * Format agent error for display with recovery options
  * @param {Object} summary - Session summary from AgentSessionManager
- * @param {Error} err - The error that occurred
+ * @param {Error} err - The error that occurred (may have fullOutputPath property)
  * @returns {string} Formatted error text
  */
 function formatAgentError(summary, err) {
@@ -177,8 +262,16 @@ function formatAgentError(summary, err) {
     `**Error:** ${err.message}`,
     `**Session ID:** \`${summary.id}\``,
     `**Iterations completed:** ${summary.iterations}`,
-    '',
   ];
+
+  // Include full output path if available (for debugging)
+  if (err.fullOutputPath) {
+    lines.push(`**Full Output:** \`${err.fullOutputPath}\``);
+    if (err.fullOutputSize) {
+      lines.push(`**Output Size:** ${(err.fullOutputSize / 1024).toFixed(1)}KB`);
+    }
+  }
+  lines.push('');
 
   if (summary.files.created.length > 0 || summary.files.modified.length > 0) {
     lines.push('### Partial Changes (review carefully):');
@@ -232,8 +325,48 @@ async function runAgentProcess({
 
     let buffer = '';
     let textOutput = '';
+    let textOutputTruncated = false;
+    let fullOutputSize = 0;
     let lastEvent = null;
     let timeoutHandle = null;
+
+    // Create write stream for full output (never truncated)
+    const outputDir = getAgentOutputDir();
+    const fullOutputPath = join(outputDir, `agent-task-${session.id}-${Date.now()}-full.txt`);
+    const fullOutputStream = createWriteStream(fullOutputPath, { encoding: 'utf8' });
+
+    // Write header to full output file
+    fullOutputStream.write(`# Agent Task Full Output\n`);
+    fullOutputStream.write(`Session: ${session.id}\n`);
+    fullOutputStream.write(`Started: ${new Date().toISOString()}\n`);
+    fullOutputStream.write(`Task: ${session.taskDescription}\n`);
+    fullOutputStream.write(`${'='.repeat(80)}\n\n`);
+
+    // Helper to write to full output file
+    const writeToFullOutput = (text) => {
+      fullOutputStream.write(text);
+      fullOutputSize += text.length;
+    };
+
+    // Helper to safely append to textOutput with size limits (for MCP response)
+    const appendTextOutput = (text) => {
+      // Always write to full output file first
+      writeToFullOutput(text);
+
+      if (textOutputTruncated) return; // Already at limit for MCP response, skip
+
+      const maxSize = OUTPUT_LIMITS.AGENT_OUTPUT_MAX || 100000;
+      if (textOutput.length + text.length > maxSize) {
+        // Truncate: keep head and tail for MCP response
+        const headTail = OUTPUT_LIMITS.AGENT_OUTPUT_HEAD_TAIL || 20000;
+        const head = textOutput.slice(0, headTail);
+        const tail = text.slice(-headTail);
+        textOutput = head + `\n\n[... output truncated for MCP response - full output: ${fullOutputPath} ...]\n\n` + tail;
+        textOutputTruncated = true;
+      } else {
+        textOutput += text;
+      }
+    };
 
     // Set up timeout
     if (timeoutMs > 0) {
@@ -293,7 +426,7 @@ async function runAgentProcess({
 
           case 'text':
           case 'message':
-            textOutput += (event.content || event.text || '') + '\n';
+            appendTextOutput((event.content || event.text || '') + '\n');
             break;
 
           case 'usage':
@@ -318,7 +451,7 @@ async function runAgentProcess({
           default:
             // Handle any text content in unknown event types
             if (event.text || event.content) {
-              textOutput += (event.text || event.content) + '\n';
+              appendTextOutput((event.text || event.content) + '\n');
             }
         }
       }
@@ -339,14 +472,24 @@ async function runAgentProcess({
       if (buffer.trim()) {
         const event = parseAgentEvent(buffer);
         if (event.text || event.content) {
-          textOutput += (event.text || event.content) + '\n';
+          appendTextOutput((event.text || event.content) + '\n');
         }
       }
+
+      // Write footer and close the full output stream
+      fullOutputStream.write(`\n${'='.repeat(80)}\n`);
+      fullOutputStream.write(`Completed: ${new Date().toISOString()}\n`);
+      fullOutputStream.write(`Exit code: ${code}\n`);
+      fullOutputStream.write(`Total output size: ${(fullOutputSize / 1024).toFixed(1)}KB\n`);
+      fullOutputStream.end();
 
       if (code === 0) {
         resolve({
           textOutput: textOutput.trim(),
           exitCode: code,
+          fullOutputPath,
+          fullOutputSize,
+          truncated: textOutputTruncated,
         });
       } else {
         // Translate exit codes to meaningful errors
@@ -370,13 +513,21 @@ async function runAgentProcess({
             break;
         }
 
-        reject(new Error(errorMessage));
+        const agentError = new Error(errorMessage);
+        agentError.fullOutputPath = fullOutputPath;
+        agentError.fullOutputSize = fullOutputSize;
+        reject(agentError);
       }
     });
 
     proc.on('error', (err) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      reject(new Error(`Failed to spawn Gemini CLI: ${err.message}`));
+      // Still close the output stream on spawn error
+      fullOutputStream.write(`\nProcess error: ${err.message}\n`);
+      fullOutputStream.end();
+      const spawnError = new Error(`Failed to spawn Gemini CLI: ${err.message}`);
+      spawnError.fullOutputPath = fullOutputPath;
+      reject(spawnError);
     });
   });
 }
@@ -398,6 +549,9 @@ async function runAgentProcess({
  * @returns {Promise<Object>} Tool response
  */
 async function handleGeminiAgentTask(args, context) {
+  // Trigger cleanup of old output files (runs in background, at most once per day)
+  cleanupOldOutputFiles().catch(() => {}); // Fire and forget
+
   const {
     task_description,
     working_directory,
@@ -507,12 +661,16 @@ async function handleGeminiAgentTask(args, context) {
     sessionManager.setResult(session.id, result.textOutput);
 
     const summary = sessionManager.getSummary(session.id);
-    const formattedResult = formatAgentResult(summary);
+    const formattedResult = formatAgentResult(summary, {
+      fullOutputPath: result.fullOutputPath,
+      fullOutputSize: result.fullOutputSize,
+      truncated: result.truncated,
+    });
 
     // Log if output was truncated
-    if (formattedResult.truncated) {
+    if (result.truncated) {
       console.log(
-        `[Agent] Output truncated: ${(formattedResult.originalSize / 1024).toFixed(1)}KB → saved to ${formattedResult.filePath}`
+        `[Agent] Output truncated for MCP response. Full output: ${result.fullOutputPath} (${(result.fullOutputSize / 1024).toFixed(1)}KB)`
       );
     }
 

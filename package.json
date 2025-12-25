@@ -1,6 +1,6 @@
 {
   "name": "hybrid-cli-agent",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Multi-agent CLI orchestrator combining Claude Code, Gemini CLI, and OpenRouter with 400+ AI models",
   "type": "module",
   "main": "src/orchestrator/index.js",
@@ -36,7 +36,7 @@
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
-    "glob": "^10.3.10",
+    "glob": "^13.0.0",
     "inquirer": "^13.1.0",
     "open": "^11.0.0",
     "ora": "^8.1.0"
