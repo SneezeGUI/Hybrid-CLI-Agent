@@ -1,6 +1,6 @@
 # Hybrid CLI Agent - TODO & Progress Tracker
 
-## Project Status: v0.3.3 - Beta
+## Project Status: v0.3.4 - Beta
 
 **Last Updated:** December 2024
 **Lines of Code:** ~8,500

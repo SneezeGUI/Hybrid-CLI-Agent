@@ -59,7 +59,7 @@ async function handleGeminiConfigShow(args, context) {
   }).join('\n');
 
   const config = {
-    version: '0.3.3',
+    version: '0.3.4',
     auth: {
       method: AUTH_CONFIG.method,
       geminiApiKey: maskValue(process.env.GEMINI_API_KEY),

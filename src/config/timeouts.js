@@ -121,11 +121,15 @@ export const OUTPUT_LIMITS = {
   CHARS_PER_TOKEN: 4,
   MCP_TOKEN_LIMIT: 20000,
   READ_TOKEN_LIMIT: 25000,
-  MCP_SOFT_LIMIT: 80000,      // ~20K tokens - triggers summarization
-  MCP_HARD_LIMIT: 160000,     // ~40K tokens - max MCP response
-  SUMMARY_TARGET: 40000,      // ~10K tokens - target for truncated output
+  MCP_SOFT_LIMIT: 32000,      // ~8K tokens - triggers summarization (reduced to prevent context overflow)
+  MCP_HARD_LIMIT: 80000,      // ~20K tokens - max MCP response (reduced for safety)
+  SUMMARY_TARGET: 16000,      // ~4K tokens - target for truncated output
   SUMMARY_FILE_TARGET: 80000, // ~20K tokens - summary file that fits in Read tool
-  TRUNCATE_TAIL_LINES: 50
+  TRUNCATE_TAIL_LINES: 50,
+  /** Maximum characters to accumulate in agent text output buffer */
+  AGENT_OUTPUT_MAX: 100000,   // ~25K tokens - cap agent output accumulation
+  /** Characters to keep from head/tail when truncating agent output */
+  AGENT_OUTPUT_HEAD_TAIL: 20000
 };
 
 /**

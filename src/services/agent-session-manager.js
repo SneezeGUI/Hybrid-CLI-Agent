@@ -191,8 +191,24 @@ class AgentSessionManager {
     if (!session) return;
 
     session.iterations++;
+
+    // Truncate large input/output to prevent memory bloat
+    const MAX_STORED_SIZE = 2000; // ~500 tokens per field
+    const truncateField = (value) => {
+      if (typeof value !== 'string') {
+        value = value != null ? JSON.stringify(value) : '';
+      }
+      if (value.length > MAX_STORED_SIZE) {
+        return value.slice(0, MAX_STORED_SIZE / 2) + '\n[...truncated...]\n' + value.slice(-MAX_STORED_SIZE / 2);
+      }
+      return value;
+    };
+
     session.toolCalls.push({
-      ...toolCall,
+      tool: toolCall.tool,
+      input: truncateField(toolCall.input),
+      output: toolCall.output ? truncateField(toolCall.output) : undefined,
+      code: toolCall.code ? truncateField(toolCall.code) : undefined,
       timestamp: Date.now(),
     });
     session.updatedAt = Date.now();
