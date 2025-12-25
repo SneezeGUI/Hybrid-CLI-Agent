@@ -127,11 +127,11 @@ The system exposes a massive toolkit to Claude Code:
 graph TD
     User[User / Claude Code] --> Orchestrator
     Orchestrator -->|Complexity Check| Router
-    Router -->|Reasoning & Sign-off| Claude[Claude Code (Supervisor)]
-    Router -->|Reading & Drafting| Gemini[Gemini CLI (Worker)]
-    Router -->|Variety & Debate| OpenRouter[OpenRouter (Specialists)]
-    Claude -- "Delegate Task" --> MCPServer[Gemini MCP Server]
-    MCPServer -- "Execute" --> Gemini
+    Router -->|Reasoning & Sign-off| Claude[Claude Code - Supervisor]
+    Router -->|Reading & Drafting| Gemini[Gemini CLI - Worker]
+    Router -->|Variety & Debate| OpenRouter[OpenRouter - Specialists]
+    Claude -->|Delegate Task| MCPServer[Gemini MCP Server]
+    MCPServer -->|Execute| Gemini
 ```
 
 ## ⚙️ Configuration
