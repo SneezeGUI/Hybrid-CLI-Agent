@@ -22,7 +22,7 @@
 
 ### 1. Installation
 ```bash
-git clone https://github.com/yourusername/hybrid-cli-agent.git
+git clone https://github.com/SneezeGUI/Hybrid-CLI-Agent.git
 cd hybrid-cli-agent
 npm install
 npm link  # Optional: makes 'hybrid' command available globally
