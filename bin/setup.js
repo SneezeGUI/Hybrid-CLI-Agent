@@ -6,6 +6,9 @@
  * Or directly: node bin/setup.js
  */
 
+// Debug: Verify which version is running
+console.log(`[DEBUG] Setup v0.3.4 running from: ${import.meta.url}`);
+
 import inquirer from 'inquirer';
 import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { join, resolve, dirname } from 'path';
