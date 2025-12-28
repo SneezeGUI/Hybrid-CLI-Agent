@@ -174,7 +174,7 @@ GEMINI_API_KEY=...            # Optional: If not using OAuth
 ```
 
 **System-Wide Install:**
-If you want to use the Gemini tools in *any* Claude Code project, the setup script registers the server globally in your `~/.claude/settings.json`.
+If you want to use the Gemini tools in *any* Claude Code project, the setup script registers the server globally in your `~/.claude.json`.
 
 ---
 

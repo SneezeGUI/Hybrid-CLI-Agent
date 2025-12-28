@@ -497,7 +497,7 @@ async function runAgentProcess({
 
         switch (code) {
           case 1:
-            errorMessage = 'Agent failed - check task description for clarity';
+            errorMessage = 'Agent failed - check task description for clarity or increase iterations/timeout';
             break;
           case 137:
             errorMessage = 'Agent killed (timeout or memory limit)';
@@ -557,7 +557,7 @@ async function handleGeminiAgentTask(args, context) {
     working_directory,
     session_id,
     context_files = [],
-    max_iterations = 20,
+    max_iterations = 50,
     timeout_minutes = 10,
     model,
   } = args;

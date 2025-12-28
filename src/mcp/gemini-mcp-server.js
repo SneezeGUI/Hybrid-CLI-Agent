@@ -1779,7 +1779,7 @@ WORKFLOW:
         },
         max_iterations: {
           type: 'integer',
-          default: 20,
+          default: 50,
           description: 'Maximum tool calls before stopping (safety limit)',
         },
         timeout_minutes: {

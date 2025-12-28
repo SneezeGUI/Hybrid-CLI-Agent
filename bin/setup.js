@@ -24,8 +24,7 @@ const PROJECT_ROOT = resolve(__dirname, '..');
 
 // Paths
 const ENV_FILE = join(PROJECT_ROOT, '.env');
-const CLAUDE_SETTINGS_DIR = join(homedir(), '.claude');
-const CLAUDE_SETTINGS_FILE = join(CLAUDE_SETTINGS_DIR, 'settings.json');
+const CLAUDE_SETTINGS_FILE = join(homedir(), '.claude.json');
 const MCP_SERVER_SCRIPT = join(PROJECT_ROOT, 'src', 'mcp', 'gemini-mcp-server.js');
 
 // Colors for console output
@@ -102,9 +101,6 @@ function loadClaudeSettings() {
  * Save Claude settings
  */
 function saveClaudeSettings(settings) {
-  if (!existsSync(CLAUDE_SETTINGS_DIR)) {
-    mkdirSync(CLAUDE_SETTINGS_DIR, { recursive: true });
-  }
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify(settings, null, 2));
 }
 
