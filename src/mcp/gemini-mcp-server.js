@@ -2895,7 +2895,7 @@ ${modelBreakdown}
         }).join('\n');
 
         const config = {
-          version: '0.3.4',  // Agent output fixes + auto cleanup
+          version: '0.3.6',  // 15 agent improvements across 4 phases
           auth: {
             method: AUTH_CONFIG.method,
             geminiApiKey: maskValue(process.env.GEMINI_API_KEY),
