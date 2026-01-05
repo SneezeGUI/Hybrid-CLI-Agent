@@ -41,6 +41,7 @@ import { processPrompt, hasFileReferences } from '../utils/prompt-processor.js';
 import { getResponseCache } from '../services/response-cache.js';
 import { applyEnvFile } from '../utils/env.js';
 import { AICollaborationEngine } from '../services/ai-collaboration.js';
+import { getContextFileCache } from '../utils/file-cache.js';
 
 // Get project root from script location (works for system-wide MCP use)
 const __filename = fileURLToPath(import.meta.url);
@@ -887,23 +888,30 @@ async function runGeminiCli(prompt, options = {}) {
 }
 
 /**
- * Read files from glob patterns with memory protection
+ * Read files from glob patterns with memory protection and optional caching
  * @param {string[]} patterns - Glob patterns
  * @param {string} baseDir - Base directory
  * @param {Object} options - Options
  * @param {number} options.maxFileSize - Max bytes per file (default 500KB)
  * @param {number} options.maxTotalSize - Max total bytes (default 5MB)
  * @param {number} options.maxFiles - Max number of files (default 100)
+ * @param {boolean} options.useCache - Use file content cache (default true)
  */
 async function readFilesFromPatterns(patterns, baseDir = process.cwd(), options = {}) {
   const {
     maxFileSize = 500 * 1024,    // 500KB per file
     maxTotalSize = 5 * 1024 * 1024, // 5MB total
     maxFiles = 100,
+    useCache = true,
   } = options;
 
   const results = [];
   let totalSize = 0;
+  let cacheHits = 0;
+  let cacheMisses = 0;
+
+  // Get file cache if caching is enabled
+  const fileCache = useCache ? getContextFileCache() : null;
 
   for (const pattern of patterns) {
     if (results.length >= maxFiles) {
@@ -940,7 +948,29 @@ async function readFilesFromPatterns(patterns, baseDir = process.cwd(), options 
             continue;
           }
 
-          const content = await readFile(filepath, 'utf-8');
+          // Use cache if available, otherwise read directly
+          let content;
+          let fromCache = false;
+
+          if (fileCache) {
+            const cached = await fileCache.getFile(filepath);
+            if (cached) {
+              content = cached.content;
+              fromCache = cached.fromCache;
+              if (fromCache) {
+                cacheHits++;
+              } else {
+                cacheMisses++;
+              }
+            }
+          }
+
+          // Fallback to direct read if cache is disabled or getFile returned null
+          if (content === undefined) {
+            content = await readFile(filepath, 'utf-8');
+            cacheMisses++;
+          }
+
           const relativePath = filepath.replace(baseDir, '').replace(/^[\/\\]/, '');
 
           // Check if this would exceed total size
@@ -953,7 +983,7 @@ async function readFilesFromPatterns(patterns, baseDir = process.cwd(), options 
             break;
           }
 
-          results.push({ path: relativePath, content });
+          results.push({ path: relativePath, content, fromCache });
           totalSize += content.length;
         } catch (e) {
           // Report unreadable files instead of silently skipping
@@ -973,6 +1003,14 @@ async function readFilesFromPatterns(patterns, baseDir = process.cwd(), options 
         error: true,
       });
     }
+  }
+
+  // Log cache stats if caching was used
+  if (fileCache && (cacheHits > 0 || cacheMisses > 0)) {
+    const hitRate = cacheHits + cacheMisses > 0
+      ? Math.round((cacheHits / (cacheHits + cacheMisses)) * 100)
+      : 0;
+    console.error(`[readFilesFromPatterns] Cache: ${cacheHits} hits, ${cacheMisses} misses (${hitRate}% hit rate)`);
   }
 
   return results;
@@ -1629,6 +1667,17 @@ USE THIS to view cache statistics, clear the cache, or check if a query is cache
       required: [],
     },
   },
+  {
+    name: 'gemini_health_check',
+    description: `Check Gemini CLI health and connectivity.
+USE THIS to verify the system is working correctly, measure latency, and check model availability.
+Returns overall health status, authentication status, and cache statistics.`,
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
 
   // === Content Analysis Tools (3) ===
   {
@@ -1836,7 +1885,7 @@ const AGENT_MODE_TOOL_NAMES = new Set([
   // Agent tools
   'gemini_agent_task', 'gemini_agent_list', 'gemini_agent_clear',
   // Auth & Utility
-  'gemini_auth_status', 'gemini_config_show', 'hybrid_metrics', 'gemini_cache_manage',
+  'gemini_auth_status', 'gemini_config_show', 'hybrid_metrics', 'gemini_cache_manage', 'gemini_health_check',
   // OpenRouter
   'openrouter_chat', 'openrouter_models', 'openrouter_usage_stats',
   // Multi-model
@@ -2928,6 +2977,103 @@ ${modelStatus}
 
         return {
           content: [{ type: 'text', text: output }],
+        };
+      }
+
+      case 'gemini_health_check': {
+        const healthResult = {
+          status: 'unknown',
+          timestamp: new Date().toISOString(),
+          geminiCli: { status: 'unknown', latencyMs: null, error: null },
+          authentication: { method: AUTH_CONFIG.method, status: 'unknown' },
+          models: { default: getDefaultModel(), available: [], rateLimited: [] },
+          cache: { status: 'unknown' },
+        };
+
+        // Test 1: Check Gemini CLI connectivity
+        const startTime = Date.now();
+        try {
+          const result = await runGeminiCli('Reply with exactly: OK', {
+            toolName: 'gemini_health_check',
+            timeout: 30000,
+            preferFast: true,
+          });
+          healthResult.geminiCli.latencyMs = Date.now() - startTime;
+          const response = typeof result === 'string' ? result : result?.response || '';
+          if (response.length > 0) {
+            healthResult.geminiCli.status = 'healthy';
+            healthResult.authentication.status = 'valid';
+          } else {
+            healthResult.geminiCli.status = 'degraded';
+            healthResult.geminiCli.error = 'Empty response';
+          }
+        } catch (err) {
+          healthResult.geminiCli.latencyMs = Date.now() - startTime;
+          healthResult.geminiCli.status = 'unhealthy';
+          healthResult.geminiCli.error = err.message;
+          if (err.message.includes('auth') || err.message.includes('401') || err.message.includes('403')) {
+            healthResult.authentication.status = 'invalid';
+          } else if (err.message.includes('rate') || err.message.includes('429')) {
+            healthResult.authentication.status = 'rate_limited';
+          } else {
+            healthResult.authentication.status = 'unknown';
+          }
+        }
+
+        // Test 2: Check model availability
+        for (const model of getSupportedModels()) {
+          if (rateLimitTracker.isAvailable(model)) {
+            healthResult.models.available.push(model);
+          } else {
+            healthResult.models.rateLimited.push(model);
+          }
+        }
+
+        // Test 3: Check cache
+        try {
+          const cache = getResponseCache();
+          const stats = cache.getStats();
+          healthResult.cache = { status: 'healthy', entries: stats.size, hitRate: stats.hitRate };
+        } catch {
+          healthResult.cache.status = 'unavailable';
+        }
+
+        // Determine overall status
+        if (healthResult.geminiCli.status === 'healthy' && healthResult.authentication.status === 'valid' && healthResult.models.available.length > 0) {
+          healthResult.status = 'healthy';
+        } else if (healthResult.geminiCli.status === 'unhealthy') {
+          healthResult.status = 'unhealthy';
+        } else {
+          healthResult.status = 'degraded';
+        }
+
+        const emoji = { healthy: '✅', degraded: '⚠️', unhealthy: '❌', unknown: '❓' };
+        return {
+          content: [{ type: 'text', text: `# Gemini Health Check
+
+## Overall Status: ${emoji[healthResult.status]} ${healthResult.status.toUpperCase()}
+
+## Gemini CLI
+- Status: ${emoji[healthResult.geminiCli.status]} ${healthResult.geminiCli.status}
+- Latency: ${healthResult.geminiCli.latencyMs !== null ? `${healthResult.geminiCli.latencyMs}ms` : 'N/A'}
+${healthResult.geminiCli.error ? `- Error: ${healthResult.geminiCli.error}` : ''}
+
+## Authentication
+- Method: ${healthResult.authentication.method}
+- Status: ${healthResult.authentication.status}
+
+## Model Availability
+- Default: ${healthResult.models.default}
+- Available (${healthResult.models.available.length}): ${healthResult.models.available.join(', ') || 'None'}
+- Rate limited (${healthResult.models.rateLimited.length}): ${healthResult.models.rateLimited.join(', ') || 'None'}
+
+## Cache
+- Status: ${healthResult.cache.status}
+${healthResult.cache.entries !== undefined ? `- Entries: ${healthResult.cache.entries}` : ''}
+${healthResult.cache.hitRate !== undefined ? `- Hit rate: ${healthResult.cache.hitRate}` : ''}
+
+## Timestamp
+${healthResult.timestamp}` }],
         };
       }
 

@@ -1,10 +1,11 @@
 /**
  * System Tool Handlers
  *
- * Handlers: hybrid_metrics, gemini_config_show, gemini_cache_manage
+ * Handlers: hybrid_metrics, gemini_config_show, gemini_cache_manage, gemini_health_check
  */
 
 import { success, error } from '../base.js';
+import { TIMEOUTS } from '../../../config/timeouts.js';
 
 /**
  * Get hybrid agent metrics
@@ -192,12 +193,148 @@ async function handleGeminiCacheManage(args, context) {
 }
 
 /**
+ * Check Gemini CLI health and connectivity
+ */
+async function handleGeminiHealthCheck(args, context) {
+  const { runGeminiCli, AUTH_CONFIG, getDefaultModel, getSupportedModels, rateLimitTracker } = context;
+
+  const healthResult = {
+    status: 'unknown',
+    timestamp: new Date().toISOString(),
+    geminiCli: {
+      status: 'unknown',
+      latencyMs: null,
+      error: null,
+    },
+    authentication: {
+      method: AUTH_CONFIG.method,
+      status: 'unknown',
+    },
+    models: {
+      default: getDefaultModel(),
+      available: [],
+      rateLimited: [],
+    },
+    cache: {
+      status: 'unknown',
+    },
+  };
+
+  // Test 1: Check Gemini CLI connectivity with a simple prompt
+  const startTime = Date.now();
+  try {
+    const testPrompt = 'Reply with exactly: HEALTH_CHECK_OK';
+    const result = await runGeminiCli(testPrompt, {
+      toolName: 'gemini_health_check',
+      timeout: TIMEOUTS.QUICK, // 30 seconds max
+      preferFast: true, // Use fastest model available
+    });
+
+    const latency = Date.now() - startTime;
+    healthResult.geminiCli.latencyMs = latency;
+
+    // Check if response indicates success
+    const response = typeof result === 'string' ? result : result?.response || '';
+    if (response.includes('HEALTH_CHECK_OK') || response.includes('OK') || response.length > 0) {
+      healthResult.geminiCli.status = 'healthy';
+      healthResult.authentication.status = 'valid';
+    } else {
+      healthResult.geminiCli.status = 'degraded';
+      healthResult.geminiCli.error = 'Unexpected response format';
+    }
+  } catch (err) {
+    healthResult.geminiCli.latencyMs = Date.now() - startTime;
+    healthResult.geminiCli.status = 'unhealthy';
+    healthResult.geminiCli.error = err.message;
+
+    // Check for auth-specific errors
+    if (err.message.includes('auth') || err.message.includes('401') || err.message.includes('403')) {
+      healthResult.authentication.status = 'invalid';
+    } else if (err.message.includes('rate') || err.message.includes('429')) {
+      healthResult.authentication.status = 'rate_limited';
+    } else {
+      healthResult.authentication.status = 'unknown';
+    }
+  }
+
+  // Test 2: Check model availability via rate limit tracker
+  const supportedModels = getSupportedModels();
+  for (const model of supportedModels) {
+    if (rateLimitTracker.isAvailable(model)) {
+      healthResult.models.available.push(model);
+    } else {
+      healthResult.models.rateLimited.push(model);
+    }
+  }
+
+  // Test 3: Check cache status
+  try {
+    const { getResponseCache } = context;
+    const cache = getResponseCache();
+    const stats = cache.getStats();
+    healthResult.cache.status = 'healthy';
+    healthResult.cache.entries = stats.size;
+    healthResult.cache.hitRate = stats.hitRate;
+  } catch {
+    healthResult.cache.status = 'unavailable';
+  }
+
+  // Determine overall status
+  if (healthResult.geminiCli.status === 'healthy' &&
+      healthResult.authentication.status === 'valid' &&
+      healthResult.models.available.length > 0) {
+    healthResult.status = 'healthy';
+  } else if (healthResult.geminiCli.status === 'unhealthy') {
+    healthResult.status = 'unhealthy';
+  } else {
+    healthResult.status = 'degraded';
+  }
+
+  // Format output
+  const statusEmoji = {
+    healthy: '✅',
+    degraded: '⚠️',
+    unhealthy: '❌',
+    unknown: '❓',
+  };
+
+  const output = `# Gemini Health Check
+
+## Overall Status: ${statusEmoji[healthResult.status]} ${healthResult.status.toUpperCase()}
+
+## Gemini CLI
+- Status: ${statusEmoji[healthResult.geminiCli.status]} ${healthResult.geminiCli.status}
+- Latency: ${healthResult.geminiCli.latencyMs !== null ? `${healthResult.geminiCli.latencyMs}ms` : 'N/A'}
+${healthResult.geminiCli.error ? `- Error: ${healthResult.geminiCli.error}` : ''}
+
+## Authentication
+- Method: ${healthResult.authentication.method}
+- Status: ${healthResult.authentication.status}
+
+## Model Availability
+- Default model: ${healthResult.models.default}
+- Available models (${healthResult.models.available.length}): ${healthResult.models.available.join(', ') || 'None'}
+- Rate limited (${healthResult.models.rateLimited.length}): ${healthResult.models.rateLimited.join(', ') || 'None'}
+
+## Cache
+- Status: ${healthResult.cache.status}
+${healthResult.cache.entries !== undefined ? `- Cached entries: ${healthResult.cache.entries}` : ''}
+${healthResult.cache.hitRate !== undefined ? `- Hit rate: ${healthResult.cache.hitRate}` : ''}
+
+## Timestamp
+${healthResult.timestamp}`;
+
+  return success(output);
+}
+
+/**
  * Export handlers map
  */
 export const handlers = {
   hybrid_metrics: handleHybridMetrics,
   gemini_config_show: handleGeminiConfigShow,
   gemini_cache_manage: handleGeminiCacheManage,
+  gemini_health_check: handleGeminiHealthCheck,
 };
 
 export default handlers;

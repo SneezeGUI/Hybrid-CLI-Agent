@@ -97,6 +97,30 @@ export const CLI_TIMEOUTS = {
 };
 
 /**
+ * Agent mode limits and defaults.
+ * Centralized to ensure consistency between handler defaults and session manager.
+ *
+ * @constant
+ * @type {Object}
+ * @property {number} DEFAULT_MAX_ITERATIONS - Maximum tool calls before stopping (safety limit)
+ * @property {number} DEFAULT_TIMEOUT_MINUTES - Timeout in minutes for agent execution
+ * @property {number} STALL_TIMEOUT_MS - Time without activity before considering agent stalled
+ * @property {number} STALL_CHECK_INTERVAL_MS - How often to check for stalls
+ * @property {number} MAX_AUTO_RETRIES - Maximum automatic retries on transient failures
+ * @property {number} SESSION_EXPIRATION_MS - Session expiration time (4 hours)
+ * @property {number} SESSION_CLEANUP_INTERVAL_MS - How often to cleanup expired sessions (1 hour)
+ */
+export const AGENT_LIMITS = {
+  DEFAULT_MAX_ITERATIONS: 50,
+  DEFAULT_TIMEOUT_MINUTES: 10,
+  STALL_TIMEOUT_MS: 120000,       // 2 minutes without activity
+  STALL_CHECK_INTERVAL_MS: 30000, // Check every 30 seconds
+  MAX_AUTO_RETRIES: 2,
+  SESSION_EXPIRATION_MS: 4 * 60 * 60 * 1000,  // 4 hours (reduced from 24h to limit memory usage)
+  SESSION_CLEANUP_INTERVAL_MS: 60 * 60 * 1000, // 1 hour
+};
+
+/**
  * Output size limits for MCP tool responses.
  * Claude Code has limits on tool result sizes. These thresholds help
  * manage large outputs by truncating or summarizing when needed.

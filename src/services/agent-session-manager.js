@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import { AGENT_LIMITS } from '../config/timeouts.js';
+import { calculateCost } from '../config/pricing.js';
 
 /**
  * Session status constants
@@ -23,15 +25,15 @@ class AgentSessionManager {
   /**
    * @param {Object} options Configuration options
    * @param {number} [options.maxSessions=50] Maximum concurrent sessions
-   * @param {number} [options.expirationMs=86400000] Session expiration (24h default)
-   * @param {number} [options.cleanupIntervalMs=3600000] Cleanup interval (1h default)
+   * @param {number} [options.expirationMs] Session expiration (default: 4 hours from AGENT_LIMITS)
+   * @param {number} [options.cleanupIntervalMs] Cleanup interval (default: 1 hour from AGENT_LIMITS)
    * @param {boolean} [options.autoCleanup=true] Enable auto-cleanup
    */
   constructor(options = {}) {
     this.sessions = new Map();
     this.maxSessions = options.maxSessions || 50;
-    this.expirationMs = options.expirationMs || 24 * 60 * 60 * 1000; // 24 hours
-    this.cleanupIntervalMs = options.cleanupIntervalMs || 60 * 60 * 1000; // 1 hour
+    this.expirationMs = options.expirationMs || AGENT_LIMITS.SESSION_EXPIRATION_MS;
+    this.cleanupIntervalMs = options.cleanupIntervalMs || AGENT_LIMITS.SESSION_CLEANUP_INTERVAL_MS;
 
     if (options.autoCleanup !== false) {
       this.cleanupInterval = setInterval(() => this.cleanup(), this.cleanupIntervalMs);
@@ -68,9 +70,9 @@ class AgentSessionManager {
       workingDirectory: options.workingDirectory || process.cwd(),
       model: options.model || null,
 
-      // Safety limits
-      maxIterations: options.maxIterations || 20,
-      timeoutMs: (options.timeoutMinutes || 10) * 60 * 1000,
+      // Safety limits (using centralized constants from config/timeouts.js)
+      maxIterations: options.maxIterations || AGENT_LIMITS.DEFAULT_MAX_ITERATIONS,
+      timeoutMs: (options.timeoutMinutes || AGENT_LIMITS.DEFAULT_TIMEOUT_MINUTES) * 60 * 1000,
       iterations: 0,
 
       // Execution tracking
@@ -87,6 +89,14 @@ class AgentSessionManager {
 
       // Token tracking
       tokens: { input: 0, output: 0, total: 0 },
+
+      // Cost tracking (for API key users)
+      authMethod: options.authMethod || 'oauth', // 'oauth' = free, 'api_key' = paid
+      estimatedCost: 0, // USD, updated when tokens are tracked
+
+      // Retry tracking
+      autoRetries: 0, // Number of auto-retries attempted
+      maxAutoRetries: options.maxAutoRetries || AGENT_LIMITS.MAX_AUTO_RETRIES,
 
       // Final result
       result: null,
@@ -161,18 +171,50 @@ class AgentSessionManager {
   }
 
   /**
-   * Updates token counts
+   * Check if a session can be auto-retried
+   * @param {string} sessionId Session ID
+   * @returns {boolean} True if auto-retry is allowed
+   */
+  canAutoRetry(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    return session.autoRetries < session.maxAutoRetries;
+  }
+
+  /**
+   * Increment the retry count for a session
+   * @param {string} sessionId Session ID
+   * @returns {number} New retry count, or -1 if session not found
+   */
+  incrementRetry(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return -1;
+    session.autoRetries++;
+    session.status = SessionStatus.PENDING; // Reset to pending for retry
+    session.updatedAt = Date.now();
+    return session.autoRetries;
+  }
+
+  /**
+   * Updates token counts and calculates estimated cost
    * @param {string} sessionId Session ID
    * @param {Object} tokens Token counts { input, output, total }
    */
   updateTokens(sessionId, tokens) {
     const session = this.sessions.get(sessionId);
     if (session && tokens) {
-      session.tokens = {
-        input: tokens.input || tokens.inputTokens || 0,
-        output: tokens.output || tokens.outputTokens || 0,
-        total: tokens.total || tokens.totalTokens || 0,
-      };
+      const input = tokens.input || tokens.inputTokens || 0;
+      const output = tokens.output || tokens.outputTokens || 0;
+      const total = tokens.total || tokens.totalTokens || 0;
+
+      session.tokens = { input, output, total };
+
+      // Calculate cost for API key users (OAuth is free)
+      if (session.authMethod !== 'oauth' && total > 0) {
+        const model = session.model || 'gemini-2.5-flash';
+        session.estimatedCost = calculateCost(model, input, output, 'gemini', session.authMethod);
+      }
+
       session.updatedAt = Date.now();
     }
   }
@@ -328,6 +370,13 @@ class AgentSessionManager {
       shellCommandList: session.shellCommands.map((c) => c.command),
 
       tokens: { ...session.tokens },
+
+      // Cost information (only relevant for API key users)
+      authMethod: session.authMethod,
+      estimatedCost: session.estimatedCost,
+      estimatedCostFormatted: session.estimatedCost > 0
+        ? `$${session.estimatedCost.toFixed(6)}`
+        : (session.authMethod === 'oauth' ? 'FREE (OAuth)' : '$0.000000'),
 
       result: session.result,
       error: session.error,

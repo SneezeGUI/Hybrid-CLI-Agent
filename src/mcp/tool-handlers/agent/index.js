@@ -8,12 +8,41 @@ import { spawn } from 'child_process';
 import { createWriteStream, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { EventEmitter } from 'events';
 import { success, error, validateRequired, processLargeOutput } from '../base.js';
 import {
   getAgentSessionManager,
   SessionStatus,
 } from '../../../services/agent-session-manager.js';
-import { OUTPUT_LIMITS } from '../../../config/timeouts.js';
+import { OUTPUT_LIMITS, AGENT_LIMITS } from '../../../config/timeouts.js';
+import { getLogger } from '../../../utils/logger.js';
+import { sleep, calculateBackoffDelay } from '../../../utils/retry.js';
+
+// Create child logger for agent module
+const logger = getLogger().child('Agent');
+
+/**
+ * Event emitter for agent progress events
+ *
+ * Events:
+ * - 'session:started' - { sessionId, taskDescription }
+ * - 'session:status' - { sessionId, status }
+ * - 'session:progress' - { sessionId, iterations, maxIterations, lastTool }
+ * - 'session:tool_call' - { sessionId, tool, input }
+ * - 'session:text' - { sessionId, text }
+ * - 'session:completed' - { sessionId, result }
+ * - 'session:failed' - { sessionId, error }
+ *
+ * @example
+ * import { agentEvents } from './agent/index.js';
+ * agentEvents.on('session:progress', ({ sessionId, iterations }) => {
+ *   console.log(`Session ${sessionId} at iteration ${iterations}`);
+ * });
+ */
+export const agentEvents = new EventEmitter();
+
+// Set max listeners to handle multiple concurrent agent tasks
+agentEvents.setMaxListeners(50);
 
 /**
  * Get or create the output directory for full agent output files
@@ -75,12 +104,26 @@ async function cleanupOldOutputFiles() {
     }
 
     if (deletedCount > 0) {
-      console.log(`[Agent] Cleaned up ${deletedCount} old output files (${(deletedBytes / 1024 / 1024).toFixed(1)}MB)`);
+      logger.info('Cleaned up old output files', {
+        event: 'cleanup',
+        deletedCount,
+        deletedMB: (deletedBytes / 1024 / 1024).toFixed(1),
+      });
     }
   } catch (e) {
-    // Silently ignore cleanup errors - non-critical operation
-    console.error('[Agent] Cleanup error:', e.message);
+    // Non-critical operation - log as debug since cleanup failures don't affect functionality
+    logger.debug('Cleanup error (non-critical)', { event: 'cleanup_error', error: e.message });
   }
+}
+
+/**
+ * Detect authentication method for cost tracking
+ * @returns {string} 'oauth' (free), 'api-key', or 'vertex' (paid)
+ */
+function detectAuthMethod() {
+  if (process.env.VERTEX_API_KEY) return 'vertex';
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) return 'api-key';
+  return 'oauth'; // Default to OAuth (free tier)
 }
 
 /**
@@ -167,6 +210,10 @@ function formatAgentResult(summary, outputInfo = {}) {
     footerLines.push(
       `### Tokens: ${summary.tokens.total.toLocaleString()} (in: ${summary.tokens.input.toLocaleString()}, out: ${summary.tokens.output.toLocaleString()})`
     );
+    // Show estimated cost for API key users
+    if (summary.estimatedCostFormatted) {
+      footerLines.push(`**Estimated Cost:** ${summary.estimatedCostFormatted}`);
+    }
     footerLines.push('');
   }
 
@@ -329,6 +376,8 @@ async function runAgentProcess({
     let fullOutputSize = 0;
     let lastEvent = null;
     let timeoutHandle = null;
+    let stallCheckHandle = null;
+    let lastActivityTime = Date.now();
 
     // Create write stream for full output (never truncated)
     const outputDir = getAgentOutputDir();
@@ -368,19 +417,35 @@ async function runAgentProcess({
       }
     };
 
-    // Set up timeout
+    // Set up overall timeout
     if (timeoutMs > 0) {
       timeoutHandle = setTimeout(() => {
+        if (stallCheckHandle) clearInterval(stallCheckHandle);
         proc.kill('SIGTERM');
         reject(new Error(`Agent timeout after ${Math.round(timeoutMs / 60000)} minutes`));
       }, timeoutMs);
     }
+
+    // Set up stall detection (kills if no activity for STALL_TIMEOUT_MS)
+    stallCheckHandle = setInterval(() => {
+      const timeSinceActivity = Date.now() - lastActivityTime;
+      if (timeSinceActivity > AGENT_LIMITS.STALL_TIMEOUT_MS) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        clearInterval(stallCheckHandle);
+        proc.kill('SIGTERM');
+        const stallSeconds = Math.round(AGENT_LIMITS.STALL_TIMEOUT_MS / 1000);
+        reject(new Error(`Agent stalled - no activity for ${stallSeconds} seconds`));
+      }
+    }, AGENT_LIMITS.STALL_CHECK_INTERVAL_MS);
 
     // Send prompt via stdin
     proc.stdin.write(prompt);
     proc.stdin.end();
 
     proc.stdout.on('data', (chunk) => {
+      // Update activity timestamp for stall detection
+      lastActivityTime = Date.now();
+
       buffer += chunk.toString();
 
       // Process complete lines
@@ -413,10 +478,26 @@ async function runAgentProcess({
             }
 
             // Record the tool call
+            const toolName = event.tool_name || event.name;
             sessionManager.recordToolCall(session.id, {
-              tool: event.tool_name || event.name,
+              tool: toolName,
               input: event.tool_input || event.input,
               code: event.tool_code,
+            });
+
+            // Emit tool call event
+            agentEvents.emit('session:tool_call', {
+              sessionId: session.id,
+              tool: toolName,
+              input: event.tool_input || event.input,
+            });
+
+            // Emit progress event
+            agentEvents.emit('session:progress', {
+              sessionId: session.id,
+              iterations: session.iterations,
+              maxIterations: session.maxIterations,
+              lastTool: toolName,
             });
             break;
 
@@ -426,7 +507,16 @@ async function runAgentProcess({
 
           case 'text':
           case 'message':
-            appendTextOutput((event.content || event.text || '') + '\n');
+            const textContent = event.content || event.text || '';
+            appendTextOutput(textContent + '\n');
+
+            // Emit text event (only for non-empty content)
+            if (textContent.trim()) {
+              agentEvents.emit('session:text', {
+                sessionId: session.id,
+                text: textContent,
+              });
+            }
             break;
 
           case 'usage':
@@ -440,7 +530,11 @@ async function runAgentProcess({
 
           case 'error':
             // Don't reject immediately - let the process finish
-            console.error('[Agent error event]:', event.error || event.message);
+            logger.warn('Agent error event', {
+              event: 'agent_error',
+              sessionId: session.id,
+              error: event.error || event.message,
+            });
             break;
 
           case 'result':
@@ -461,12 +555,17 @@ async function runAgentProcess({
       // Log stderr but don't fail - Gemini outputs progress info to stderr
       const text = chunk.toString();
       if (text.includes('error') || text.includes('Error')) {
-        console.error('[Agent stderr]:', text);
+        logger.debug('Agent stderr', {
+          event: 'stderr',
+          sessionId: session.id,
+          text: text.trim().slice(0, 500), // Truncate long stderr
+        });
       }
     });
 
     proc.on('close', (code) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (stallCheckHandle) clearInterval(stallCheckHandle);
 
       // Process any remaining buffer
       if (buffer.trim()) {
@@ -494,13 +593,16 @@ async function runAgentProcess({
       } else {
         // Translate exit codes to meaningful errors
         let errorMessage = `Agent exited with code ${code}`;
+        let isRetryable = false;
 
         switch (code) {
           case 1:
             errorMessage = 'Agent failed - check task description for clarity or increase iterations/timeout';
+            isRetryable = true; // General failure may be transient
             break;
           case 137:
             errorMessage = 'Agent killed (timeout or memory limit)';
+            isRetryable = true; // May succeed with retry
             break;
           case 41:
             errorMessage = 'Authentication failed - run `gemini auth login`';
@@ -514,6 +616,8 @@ async function runAgentProcess({
         }
 
         const agentError = new Error(errorMessage);
+        agentError.exitCode = code;
+        agentError.isRetryable = isRetryable;
         agentError.fullOutputPath = fullOutputPath;
         agentError.fullOutputSize = fullOutputSize;
         reject(agentError);
@@ -522,6 +626,7 @@ async function runAgentProcess({
 
     proc.on('error', (err) => {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (stallCheckHandle) clearInterval(stallCheckHandle);
       // Still close the output stream on spawn error
       fullOutputStream.write(`\nProcess error: ${err.message}\n`);
       fullOutputStream.end();
@@ -557,8 +662,8 @@ async function handleGeminiAgentTask(args, context) {
     working_directory,
     session_id,
     context_files = [],
-    max_iterations = 50,
-    timeout_minutes = 10,
+    max_iterations = AGENT_LIMITS.DEFAULT_MAX_ITERATIONS,
+    timeout_minutes = AGENT_LIMITS.DEFAULT_TIMEOUT_MINUTES,
     model,
   } = args;
 
@@ -602,6 +707,16 @@ async function handleGeminiAgentTask(args, context) {
       maxIterations: max_iterations,
       timeoutMinutes: timeout_minutes,
       model,
+      authMethod: detectAuthMethod(),
+    });
+
+    // Emit session started event
+    agentEvents.emit('session:started', {
+      sessionId: session.id,
+      taskDescription: task_description,
+      workingDirectory: session.workingDirectory,
+      maxIterations: max_iterations,
+      model: session.model,
     });
   }
 
@@ -638,50 +753,103 @@ async function handleGeminiAgentTask(args, context) {
         }
       }
     } catch (err) {
-      console.error('[Agent] Failed to read context files:', err.message);
+      logger.warn('Failed to read context files', {
+        event: 'context_read_error',
+        sessionId: session.id,
+        patterns: context_files,
+        error: err.message,
+      });
       // Continue without context files
     }
   }
 
-  // Execute agent
+  // Execute agent with automatic retry for transient failures
   sessionManager.setStatus(session.id, SessionStatus.RUNNING);
 
-  try {
-    const result = await runAgentProcess({
-      args: cliArgs,
-      prompt,
-      session,
-      sessionManager,
-      context,
-      workingDirectory: session.workingDirectory,
-      timeoutMs: session.timeoutMs,
-    });
+  let lastError = null;
+  let result = null;
 
-    // Mark session as completed
-    sessionManager.setResult(session.id, result.textOutput);
+  // Retry loop for transient failures
+  while (true) {
+    try {
+      result = await runAgentProcess({
+        args: cliArgs,
+        prompt,
+        session,
+        sessionManager,
+        context,
+        workingDirectory: session.workingDirectory,
+        timeoutMs: session.timeoutMs,
+      });
+      break; // Success - exit retry loop
+    } catch (err) {
+      lastError = err;
 
-    const summary = sessionManager.getSummary(session.id);
-    const formattedResult = formatAgentResult(summary, {
-      fullOutputPath: result.fullOutputPath,
-      fullOutputSize: result.fullOutputSize,
-      truncated: result.truncated,
-    });
+      // Check if error is retryable and session allows more retries
+      if (err.isRetryable && sessionManager.canAutoRetry(session.id)) {
+        const retryCount = sessionManager.incrementRetry(session.id);
+        const delay = calculateBackoffDelay(retryCount - 1, 5000, 60000, true);
 
-    // Log if output was truncated
-    if (result.truncated) {
-      console.log(
-        `[Agent] Output truncated for MCP response. Full output: ${result.fullOutputPath} (${(result.fullOutputSize / 1024).toFixed(1)}KB)`
-      );
+        logger.warn('Agent failed with retryable error, auto-retrying', {
+          event: 'auto_retry',
+          sessionId: session.id,
+          attempt: retryCount,
+          maxRetries: session.maxAutoRetries,
+          exitCode: err.exitCode,
+          delayMs: delay,
+        });
+
+        await sleep(delay);
+        sessionManager.setStatus(session.id, SessionStatus.RUNNING);
+        continue; // Retry
+      }
+
+      // Not retryable or max retries reached - fail
+      sessionManager.setError(session.id, err.message);
+
+      // Emit session failed event
+      agentEvents.emit('session:failed', {
+        sessionId: session.id,
+        error: err.message,
+        exitCode: err.exitCode,
+        iterations: session.iterations,
+      });
+
+      const summary = sessionManager.getSummary(session.id);
+      return error(formatAgentError(summary, err));
     }
-
-    return success(formattedResult.text);
-  } catch (err) {
-    // Mark session as failed
-    sessionManager.setError(session.id, err.message);
-
-    const summary = sessionManager.getSummary(session.id);
-    return error(formatAgentError(summary, err));
   }
+
+  // Mark session as completed
+  sessionManager.setResult(session.id, result.textOutput);
+
+  // Emit session completed event
+  agentEvents.emit('session:completed', {
+    sessionId: session.id,
+    iterations: session.iterations,
+    filesCreated: session.filesCreated.length,
+    filesModified: session.filesModified.length,
+    fullOutputPath: result.fullOutputPath,
+  });
+
+  const summary = sessionManager.getSummary(session.id);
+  const formattedResult = formatAgentResult(summary, {
+    fullOutputPath: result.fullOutputPath,
+    fullOutputSize: result.fullOutputSize,
+    truncated: result.truncated,
+  });
+
+  // Log if output was truncated
+  if (result.truncated) {
+    logger.info('Output truncated for MCP response', {
+      event: 'output_truncated',
+      sessionId: session.id,
+      fullOutputPath: result.fullOutputPath,
+      fullOutputSizeKB: (result.fullOutputSize / 1024).toFixed(1),
+    });
+  }
+
+  return success(formattedResult.text);
 }
 
 /**

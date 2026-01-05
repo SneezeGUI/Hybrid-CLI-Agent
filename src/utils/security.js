@@ -66,10 +66,10 @@ export const PROTECTED_FILES = new Set([
 ]);
 
 /**
- * Directory patterns that should be protected from writes
+ * Directory patterns that are ALWAYS protected from writes
  * Uses simple string matching (startsWith)
  */
-export const PROTECTED_DIRECTORIES = [
+const ALWAYS_PROTECTED_DIRECTORIES = [
   // Package directories
   'node_modules/',
   'vendor/',
@@ -90,8 +90,13 @@ export const PROTECTED_DIRECTORIES = [
   'dist/',
   'build/',
   'out/',
+];
 
-  // This project's critical directories (prevent self-modification)
+/**
+ * Directories that prevent self-modification of this project's code
+ * These are only protected when ALLOW_SELF_MODIFY is not 'true'
+ */
+const SELF_MODIFY_DIRECTORIES = [
   'src/mcp/',
   'src/utils/',
   'src/services/',
@@ -99,6 +104,25 @@ export const PROTECTED_DIRECTORIES = [
   'src/orchestrator/',
   'bin/',
 ];
+
+/**
+ * Check if self-modification is allowed
+ * When ALLOW_SELF_MODIFY=true, the agent can modify its own source code
+ * This is useful for development but should be disabled in production
+ * @returns {boolean} True if self-modification is allowed
+ */
+export function isSelfModifyAllowed() {
+  return process.env.ALLOW_SELF_MODIFY === 'true';
+}
+
+/**
+ * Directory patterns that should be protected from writes
+ * Built dynamically based on ALLOW_SELF_MODIFY environment variable
+ * @type {string[]}
+ */
+export const PROTECTED_DIRECTORIES = isSelfModifyAllowed()
+  ? [...ALWAYS_PROTECTED_DIRECTORIES]
+  : [...ALWAYS_PROTECTED_DIRECTORIES, ...SELF_MODIFY_DIRECTORIES];
 
 /**
  * File extensions that are dangerous to write (could be executed)
@@ -599,4 +623,5 @@ export default {
   TIMEOUTS,
   // Agent mode
   isAgentModeEnabled,
+  isSelfModifyAllowed,
 };

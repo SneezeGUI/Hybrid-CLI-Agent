@@ -10,6 +10,7 @@ import AgentSessionManager, {
   resetAgentSessionManager,
   SessionStatus,
 } from '../src/services/agent-session-manager.js';
+import { AGENT_LIMITS } from '../src/config/timeouts.js';
 
 describe('AgentSessionManager', () => {
   let manager;
@@ -69,8 +70,8 @@ describe('AgentSessionManager', () => {
         taskDescription: 'Test task',
       });
 
-      assert.strictEqual(session.maxIterations, 20);
-      assert.strictEqual(session.timeoutMs, 10 * 60 * 1000);
+      assert.strictEqual(session.maxIterations, AGENT_LIMITS.DEFAULT_MAX_ITERATIONS);
+      assert.strictEqual(session.timeoutMs, AGENT_LIMITS.DEFAULT_TIMEOUT_MINUTES * 60 * 1000);
       assert.strictEqual(session.iterations, 0);
       assert.deepStrictEqual(session.toolCalls, []);
       assert.deepStrictEqual(session.filesCreated, []);

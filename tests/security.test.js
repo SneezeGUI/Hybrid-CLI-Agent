@@ -16,6 +16,8 @@ import {
   isWriteAllowed,
   validateDirectory,
   validateFile,
+  isSelfModifyAllowed,
+  PROTECTED_DIRECTORIES,
   TIMEOUTS,
 } from '../src/utils/security.js';
 
@@ -409,4 +411,99 @@ describe('validateFile', () => {
     const result = await validateFile('../outside.js', baseDir);
     assert.strictEqual(result, null);
   });
+});
+
+describe('isSelfModifyAllowed', () => {
+  // Note: PROTECTED_DIRECTORIES is evaluated at module load time
+  // So we can only test the function itself here, not the behavior
+  // of PROTECTED_DIRECTORIES when ALLOW_SELF_MODIFY changes at runtime
+
+  it('should return false when ALLOW_SELF_MODIFY is not set', () => {
+    // Save original value
+    const original = process.env.ALLOW_SELF_MODIFY;
+    delete process.env.ALLOW_SELF_MODIFY;
+
+    try {
+      assert.strictEqual(isSelfModifyAllowed(), false);
+    } finally {
+      // Restore
+      if (original !== undefined) {
+        process.env.ALLOW_SELF_MODIFY = original;
+      }
+    }
+  });
+
+  it('should return false when ALLOW_SELF_MODIFY is "false"', () => {
+    const original = process.env.ALLOW_SELF_MODIFY;
+    process.env.ALLOW_SELF_MODIFY = 'false';
+
+    try {
+      assert.strictEqual(isSelfModifyAllowed(), false);
+    } finally {
+      if (original !== undefined) {
+        process.env.ALLOW_SELF_MODIFY = original;
+      } else {
+        delete process.env.ALLOW_SELF_MODIFY;
+      }
+    }
+  });
+
+  it('should return true when ALLOW_SELF_MODIFY is "true"', () => {
+    const original = process.env.ALLOW_SELF_MODIFY;
+    process.env.ALLOW_SELF_MODIFY = 'true';
+
+    try {
+      assert.strictEqual(isSelfModifyAllowed(), true);
+    } finally {
+      if (original !== undefined) {
+        process.env.ALLOW_SELF_MODIFY = original;
+      } else {
+        delete process.env.ALLOW_SELF_MODIFY;
+      }
+    }
+  });
+});
+
+describe('PROTECTED_DIRECTORIES configuration', () => {
+  // These tests verify the current state of PROTECTED_DIRECTORIES
+  // Note: The array is built at module load time based on ALLOW_SELF_MODIFY
+
+  it('should always include node_modules/', () => {
+    assert.ok(PROTECTED_DIRECTORIES.includes('node_modules/'));
+  });
+
+  it('should always include .git/', () => {
+    assert.ok(PROTECTED_DIRECTORIES.includes('.git/'));
+  });
+
+  it('should always include dist/', () => {
+    assert.ok(PROTECTED_DIRECTORIES.includes('dist/'));
+  });
+
+  it('should be an array', () => {
+    assert.ok(Array.isArray(PROTECTED_DIRECTORIES));
+    assert.ok(PROTECTED_DIRECTORIES.length > 0);
+  });
+
+  // Self-modify directories behavior depends on env at load time
+  // By default (no ALLOW_SELF_MODIFY=true), these should be protected
+  if (process.env.ALLOW_SELF_MODIFY !== 'true') {
+    it('should include self-modify directories when ALLOW_SELF_MODIFY is not true', () => {
+      assert.ok(PROTECTED_DIRECTORIES.includes('src/mcp/'));
+      assert.ok(PROTECTED_DIRECTORIES.includes('src/utils/'));
+      assert.ok(PROTECTED_DIRECTORIES.includes('src/services/'));
+      assert.ok(PROTECTED_DIRECTORIES.includes('src/adapters/'));
+      assert.ok(PROTECTED_DIRECTORIES.includes('src/orchestrator/'));
+      assert.ok(PROTECTED_DIRECTORIES.includes('bin/'));
+    });
+  } else {
+    it('should NOT include self-modify directories when ALLOW_SELF_MODIFY=true', () => {
+      assert.ok(!PROTECTED_DIRECTORIES.includes('src/mcp/'));
+      assert.ok(!PROTECTED_DIRECTORIES.includes('src/utils/'));
+      assert.ok(!PROTECTED_DIRECTORIES.includes('src/services/'));
+      assert.ok(!PROTECTED_DIRECTORIES.includes('src/adapters/'));
+      assert.ok(!PROTECTED_DIRECTORIES.includes('src/orchestrator/'));
+      assert.ok(!PROTECTED_DIRECTORIES.includes('bin/'));
+    });
+  }
 });
