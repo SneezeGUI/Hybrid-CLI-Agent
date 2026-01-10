@@ -1,11 +1,11 @@
 # Hybrid CLI Agent - TODO & Progress Tracker
 
-## Project Status: v0.3.4 - Beta
+## Project Status: v0.3.6 - Beta
 
-**Last Updated:** December 2024
-**Lines of Code:** ~8,500
-**MCP Tools:** 27
-**Test Coverage:** 430 tests passing (14 test files)
+**Last Updated:** January 2026
+**Lines of Code:** ~9,500
+**MCP Tools:** 30+
+**Test Coverage:** 677 tests passing (23 test files)
 
 ---
 
@@ -181,6 +181,28 @@ Key improvements:
 - [x] CLI operation summary after draft/review
 - [x] Dependency injection in orchestrator for testability
 - [x] Comprehensive service tests (ResponseCache, ConversationManager, OpenRouterClient)
+
+### Phase 10: v0.3.5 - v0.3.6 Improvements (Jan 2026) ✅ COMPLETE
+
+#### v0.3.5 - Agent Output Fixes
+- [x] Fixed agent output truncation causing "exceeds maximum tokens" errors
+- [x] Added dual output files (full + summary) for large outputs
+- [x] Fixed session memory bloat from unbounded tool call data
+- [x] Fixed silent failures when reading context files
+- [x] Fixed JSON parse errors from CLI warning output
+- [x] Added auto cleanup of old output files (>30 days)
+
+#### v0.3.6 - Error Handling Centralization
+- [x] Added `analyzeStderr()` - centralized error detection from CLI stderr
+- [x] Added `formatErrorResponse()` - standardized MCP error responses with recovery hints
+- [x] Added `withErrorHandling()` - HOF wrapper for consistent handler error catching
+- [x] Added `createTypedError()` - typed errors (RateLimitError, AuthenticationError, etc.)
+- [x] Refactored `gemini-mcp-server.js` to use centralized error utilities
+- [x] Added 48 new tests: error utilities, core handlers, AI collaboration
+- [x] Updated memory banks to v0.3.6
+- [x] Created CHANGELOG.md
+
+**Test Growth:** 430 → 677 tests (+247)
 
 ---
 

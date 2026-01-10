@@ -7,6 +7,16 @@ import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { OUTPUT_LIMITS } from '../../config/timeouts.js';
+import {
+  HybridError,
+  ValidationError,
+  AuthenticationError,
+  RateLimitError,
+  TimeoutError,
+  ModelError,
+  wrapError
+} from '../../utils/errors.js';
+import { getLogger } from '../../utils/logger.js';
 
 /**
  * Estimate token count from text length
@@ -517,6 +527,139 @@ export function processLargeOutput(output, options = {}) {
   };
 }
 
+/**
+ * Analyze stderr to detect specific error types
+ * @param {string} stderr - Standard error output
+ * @returns {Object} Analysis result
+ */
+export function analyzeStderr(stderr) {
+  const result = {
+    isRateLimit: false,
+    isModelError: false,
+    isAuthError: false,
+    isTimeout: false,
+    isUnknown: false,
+    raw: stderr
+  };
+
+  if (!stderr) return result;
+
+  const lowerErr = stderr.toLowerCase();
+
+  // Rate limits
+  if (lowerErr.includes('429') ||
+      lowerErr.includes('rate limit') ||
+      lowerErr.includes('quota exceeded') ||
+      lowerErr.includes('resource_exhausted')) {
+    result.isRateLimit = true;
+    return result;
+  }
+
+  // Model errors
+  if (lowerErr.includes('model') &&
+      (lowerErr.includes('not found') || lowerErr.includes('invalid') || lowerErr.includes('unsupported'))) {
+    result.isModelError = true;
+    return result;
+  }
+
+  // Auth errors
+  if (lowerErr.includes('auth') ||
+      lowerErr.includes('credential') ||
+      lowerErr.includes('unauthenticated') ||
+      lowerErr.includes('permission denied') ||
+      lowerErr.includes('401') ||
+      lowerErr.includes('403')) {
+    result.isAuthError = true;
+    return result;
+  }
+
+  // Timeouts
+  if (lowerErr.includes('timeout') ||
+      lowerErr.includes('timed out') ||
+      lowerErr.includes('deadline_exceeded')) {
+    result.isTimeout = true;
+    return result;
+  }
+
+  result.isUnknown = true;
+  return result;
+}
+
+/**
+ * Create a typed HybridError from analysis
+ * @param {Object} analysis - Analysis from analyzeStderr
+ * @param {string} message - Error message
+ * @param {Object} context - Additional context
+ * @returns {HybridError} Typed error
+ */
+export function createTypedError(analysis, message, context = {}) {
+  if (analysis.isRateLimit) {
+    return new RateLimitError(message, null, context.provider || 'gemini');
+  }
+  if (analysis.isAuthError) {
+    return new AuthenticationError(message, context.authMethod || 'unknown');
+  }
+  if (analysis.isTimeout) {
+    return new TimeoutError(message, context.operation, context.timeoutMs);
+  }
+  if (analysis.isModelError) {
+    return new ModelError(message, context.model, context.provider || 'gemini');
+  }
+  return new HybridError(message, 'UNKNOWN_ERROR', context);
+}
+
+/**
+ * Format any error into a standardized MCP response
+ * @param {Error} err - The error object
+ * @param {string} toolName - Name of the tool
+ * @param {Object} options - Additional options
+ * @returns {Object} MCP error response
+ */
+export function formatErrorResponse(err, toolName, options = {}) {
+  const wrappedError = wrapError(err, toolName);
+  const logger = getLogger();
+
+  // Log the error with structured context
+  logger.error(`${toolName} failed`, wrappedError);
+
+  const userMessage = wrappedError.toUserMessage();
+  let hint = '';
+
+  if (wrappedError instanceof RateLimitError) {
+    hint = " Hint: Wait a moment and retry, or try a different model.";
+  } else if (wrappedError instanceof AuthenticationError) {
+    hint = " Hint: Run `gemini auth login` to re-authenticate.";
+  } else if (wrappedError instanceof TimeoutError) {
+    hint = " Hint: Try a simpler query or increase timeout.";
+  }
+
+  return {
+    content: [{ type: 'text', text: `Error: ${userMessage}${hint}` }],
+    isError: true,
+  };
+}
+
+/**
+ * Higher-order function to wrap handlers with robust error handling
+ * @param {Function} handlerFn - The handler function to wrap
+ * @param {string} toolName - Name of the tool for error messages
+ * @returns {Function} Wrapped handler function
+ */
+export function withErrorHandling(handlerFn, toolName) {
+  return async function wrappedHandler(args, context) {
+    const logger = getLogger().child(toolName);
+    logger.debug('Handler invoked', { args: Object.keys(args) });
+
+    try {
+      const result = await handlerFn(args, context);
+      logger.debug('Handler completed');
+      return result;
+    } catch (err) {
+      return formatErrorResponse(err, toolName);
+    }
+  };
+}
+
 export default {
   success,
   error,
@@ -526,6 +669,10 @@ export default {
   fetchWithTimeout,
   cleanCodeOutput,
   withHandler,
+  withErrorHandling,
+  analyzeStderr,
+  createTypedError,
+  formatErrorResponse,
   saveOutputToFile,
   saveDualOutputFiles,
   smartTruncate,

@@ -42,6 +42,7 @@ import { getResponseCache } from '../services/response-cache.js';
 import { applyEnvFile } from '../utils/env.js';
 import { AICollaborationEngine } from '../services/ai-collaboration.js';
 import { getContextFileCache } from '../utils/file-cache.js';
+import { analyzeStderr, createTypedError } from './tool-handlers/base.js';
 
 // Get project root from script location (works for system-wide MCP use)
 const __filename = fileURLToPath(import.meta.url);
@@ -721,40 +722,33 @@ async function runGeminiCli(prompt, options = {}) {
 
           resolve({ response, model: selectedModel, authMethod: currentAuthMethod, tokens });
         } else {
-          // Check for rate limit errors
-          const isRateLimit = stderr.includes('429') ||
-                              stderr.includes('rate limit') ||
-                              stderr.includes('quota exceeded') ||
-                              stderr.includes('RESOURCE_EXHAUSTED');
+          const analysis = analyzeStderr(stderr);
 
-          // Check for model not found errors (don't treat as auth error!)
-          const isModelError = stderr.toLowerCase().includes('model') ||
-                               stderr.includes('not found') ||
-                               stderr.includes('invalid') ||
-                               stderr.includes('unsupported');
-
-          // Check for authentication errors (but not if it's a model error)
-          const isAuthError = !isModelError && (
-                              stderr.toLowerCase().includes('auth') ||
-                              stderr.toLowerCase().includes('credential') ||
-                              stderr.toLowerCase().includes('unauthenticated') ||
-                              stderr.toLowerCase().includes('permission denied') ||
-                              stderr.includes('401') ||
-                              stderr.includes('403'));
-
-          if (isRateLimit) {
+          if (analysis.isRateLimit || analysis.isModelError) {
+            if (analysis.isModelError) {
+              console.error(`[gemini-worker] Model error for ${selectedModel}, will try fallback`);
+            }
             rateLimitTracker.recordFailure(selectedModel);
-            reject({ isRateLimit: true, model: selectedModel, error: stderr });
-          } else if (isModelError) {
-            // Model error - treat as rate limit to trigger model fallback
-            console.error(`[gemini-worker] Model error for ${selectedModel}, will try fallback`);
-            rateLimitTracker.recordFailure(selectedModel);
-            reject({ isRateLimit: true, model: selectedModel, error: stderr });
-          } else if (isAuthError) {
-            // Auth failure - record and allow fallback
-            reject({ isAuthError: true, authMethod: currentAuthMethod, error: stderr });
+            reject({ 
+              isRateLimit: analysis.isRateLimit,
+              isModelError: analysis.isModelError,
+              model: selectedModel, 
+              error: stderr,
+              analysis 
+            });
+          } else if (analysis.isAuthError) {
+            reject({ 
+              isAuthError: true, 
+              authMethod: currentAuthMethod, 
+              error: stderr,
+              analysis 
+            });
           } else {
-            reject(new Error(`Gemini CLI error: ${stderr || 'Unknown error'}`));
+            reject(createTypedError(analysis, stderr.trim() || 'Unknown CLI error', { 
+              model: selectedModel,
+              authMethod: currentAuthMethod,
+              provider: 'gemini'
+            }));
           }
         }
       });
