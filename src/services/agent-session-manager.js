@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { AGENT_LIMITS, OUTPUT_LIMITS } from '../config/timeouts.js';
 import { calculateCost } from '../config/pricing.js';
+import { SessionError } from '../utils/errors.js';
 
 /**
  * Session status constants
@@ -54,7 +55,7 @@ class AgentSessionManager {
    */
   createSession(options = {}) {
     if (this.sessions.size >= this.maxSessions) {
-      throw new Error(`Maximum sessions (${this.maxSessions}) reached. Delete old sessions first.`);
+      throw new SessionError(`Maximum sessions (${this.maxSessions}) reached. Delete old sessions first.`);
     }
 
     const sessionId = crypto.randomUUID();

@@ -13,6 +13,7 @@
 
 import { randomUUID } from 'crypto';
 import { CONVERSATION_CONFIG } from '../config/timeouts.js';
+import { SessionError } from '../utils/errors.js';
 
 /**
  * Message roles
@@ -126,21 +127,21 @@ export class ConversationManager {
   addMessage(conversationId, role, content) {
     const conversation = this.conversations.get(conversationId);
     if (!conversation) {
-      throw new Error(`Conversation ${conversationId} not found`);
+      throw new SessionError(`Conversation ${conversationId} not found`, conversationId);
     }
 
     if (conversation.state !== ConversationState.ACTIVE) {
-      throw new Error(`Conversation ${conversationId} is ${conversation.state}`);
+      throw new SessionError(`Conversation ${conversationId} is ${conversation.state}`, conversationId, conversation.state);
     }
 
     // Check limits
     if (conversation.messages.length >= this.config.maxMessages) {
-      throw new Error(`Conversation has reached max messages (${this.config.maxMessages})`);
+      throw new SessionError(`Conversation has reached max messages (${this.config.maxMessages})`, conversationId, conversation.state);
     }
 
     const tokens = this.estimateTokens(content);
     if (conversation.stats.estimatedTokens + tokens > this.config.maxTotalTokens) {
-      throw new Error(`Conversation would exceed token limit`);
+      throw new SessionError(`Conversation would exceed token limit`, conversationId, conversation.state);
     }
 
     const message = {

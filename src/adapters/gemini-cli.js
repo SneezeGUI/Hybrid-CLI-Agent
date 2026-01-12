@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import { BaseAdapter } from './base.js';
 import { safeSpawn } from '../utils/security.js';
 import { GEMINI_PRICING } from '../config/index.js';
+import { ProcessError, SessionError } from '../utils/errors.js';
 
 /**
  * Authentication Methods:
@@ -211,7 +212,7 @@ export class GeminiCliAdapter extends BaseAdapter {
         if (code === 0) {
           resolve(stdout.trim());
         } else {
-          reject(new Error(stderr || `Gemini CLI exited with code ${code}`));
+          reject(new ProcessError(stderr || 'Gemini CLI exited with error', 'gemini', code));
         }
       });
 
@@ -226,7 +227,7 @@ export class GeminiCliAdapter extends BaseAdapter {
   async *send(sessionId, message, options = {}) {
     const session = this.sessions.get(sessionId);
     if (!session) {
-      throw new Error(`Session ${sessionId} not found`);
+      throw new SessionError(`Session ${sessionId} not found`, sessionId);
     }
 
     session.status = 'busy';

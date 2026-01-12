@@ -10,6 +10,12 @@
  */
 
 import { OPENROUTER_MODELS as CONFIG_OPENROUTER_MODELS } from '../config/index.js';
+import { 
+  AuthenticationError, 
+  ModelError, 
+  TimeoutError, 
+  RateLimitError 
+} from '../utils/errors.js';
 
 /**
  * Popular models available via OpenRouter
@@ -61,7 +67,7 @@ export class OpenRouterClient {
    */
   async chat(options = {}) {
     if (!this.isConfigured()) {
-      throw new Error('OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable.');
+      throw new AuthenticationError('OpenRouter API key not configured. Set OPENROUTER_API_KEY environment variable.', 'api-key');
     }
 
     const {
@@ -103,7 +109,15 @@ export class OpenRouterClient {
 
       if (!response.ok) {
         const error = await response.text();
-        throw new Error(`OpenRouter API error: ${response.status} - ${error}`);
+        const msg = `OpenRouter API error: ${response.status} - ${error}`;
+        
+        if (response.status === 429) {
+          throw new RateLimitError(msg, null, 'openrouter');
+        } else if (response.status === 401 || response.status === 403) {
+          throw new AuthenticationError(msg, 'api-key');
+        }
+        
+        throw new ModelError(msg, model, 'openrouter');
       }
 
       const data = await response.json();
@@ -122,7 +136,7 @@ export class OpenRouterClient {
     } catch (error) {
       clearTimeout(timeoutId);
       if (error.name === 'AbortError') {
-        throw new Error(`OpenRouter request timed out after ${timeoutMs}ms`);
+        throw new TimeoutError(`OpenRouter request timed out after ${timeoutMs}ms`, 'chat', timeoutMs);
       }
       throw error;
     }
