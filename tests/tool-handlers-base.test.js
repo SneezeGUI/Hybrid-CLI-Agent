@@ -2,11 +2,11 @@
  * Tests for tool-handlers base utilities
  */
 
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert';
-import { existsSync, unlinkSync, readFileSync } from 'fs';
+import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import {
   success,
   error,
@@ -16,6 +16,7 @@ import {
   fetchWithTimeout,
   withHandler,
   runGitDiff,
+  readFilesFromPatterns,
   saveOutputToFile,
   saveDualOutputFiles,
   smartTruncate,
@@ -366,6 +367,111 @@ describe('runGitDiff', () => {
     });
 
     assert.ok(result.includes('No changes'));
+  });
+});
+
+describe('readFilesFromPatterns', () => {
+  const testFiles = [];
+  const testDir = join(tmpdir(), `read-files-test-${Date.now()}`);
+
+  // Helper to create test file
+  const createFile = (name, content) => {
+    const path = join(testDir, name);
+    writeFileSync(path, content, 'utf8');
+    testFiles.push(path);
+    return path;
+  };
+
+  beforeEach(() => {
+    if (!existsSync(testDir)) {
+      mkdirSync(testDir, { recursive: true });
+    }
+  });
+
+  afterEach(() => {
+    // Cleanup
+    try {
+      for (const file of testFiles) {
+        if (existsSync(file)) unlinkSync(file);
+      }
+      if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
+    } catch {}
+    testFiles.length = 0;
+  });
+
+  it('should read single file matching pattern', async () => {
+    createFile('test.txt', 'hello world');
+    const results = await readFilesFromPatterns(['*.txt'], testDir, { useCache: false });
+    
+    assert.strictEqual(results.length, 1);
+    assert.strictEqual(results[0].content, 'hello world');
+    assert.ok(results[0].path.includes('test.txt'));
+  });
+
+  it('should read multiple files', async () => {
+    createFile('a.txt', 'A');
+    createFile('b.txt', 'B');
+    const results = await readFilesFromPatterns(['*.txt'], testDir, { useCache: false });
+    
+    assert.strictEqual(results.length, 2);
+    // Sort to ensure order
+    results.sort((a, b) => a.path.localeCompare(b.path));
+    assert.strictEqual(results[0].content, 'A');
+    assert.strictEqual(results[1].content, 'B');
+  });
+
+  it('should respect maxFiles limit', async () => {
+    createFile('1.js', '1');
+    createFile('2.js', '2');
+    createFile('3.js', '3');
+    
+    const results = await readFilesFromPatterns(['*.js'], testDir, { maxFiles: 2, useCache: false });
+    assert.strictEqual(results.length, 2);
+  });
+
+  it('should respect maxTotalSize limit', async () => {
+    createFile('large1.txt', '12345');
+    createFile('large2.txt', '67890');
+    
+    // Limit to 7 bytes total
+    const results = await readFilesFromPatterns(['large*.txt'], testDir, { maxTotalSize: 7, useCache: false });
+    
+    // Sort by path to ensure deterministic order of results array
+    results.sort((a, b) => a.path.localeCompare(b.path));
+
+    // One file should be full (5 bytes), one should be truncated (2 bytes)
+    // because total limit is 7. Order of processing depends on glob.
+    
+    const r1 = results[0]; // large1.txt
+    const r2 = results[1]; // large2.txt
+
+    if (r1.truncated) {
+      // large1 processed second
+      assert.ok(r1.content.startsWith('12'));
+      assert.strictEqual(r2.content, '67890');
+      assert.strictEqual(r2.truncated, undefined); // or false
+    } else {
+      // large1 processed first
+      assert.strictEqual(r1.content, '12345');
+      assert.ok(r2.truncated);
+      assert.ok(r2.content.startsWith('67'));
+    }
+  });
+
+  it('should skip files exceeding maxFileSize', async () => {
+    createFile('huge.txt', '1234567890');
+    
+    const results = await readFilesFromPatterns(['huge.txt'], testDir, { maxFileSize: 5, useCache: false });
+    
+    assert.strictEqual(results.length, 1);
+    assert.ok(results[0].skipped);
+    assert.ok(results[0].content.includes('File too large'));
+  });
+
+  it('should handle errors gracefully', async () => {
+    // Pattern that matches nothing
+    const results = await readFilesFromPatterns(['nonexistent.xyz'], testDir);
+    assert.strictEqual(results.length, 0);
   });
 });
 

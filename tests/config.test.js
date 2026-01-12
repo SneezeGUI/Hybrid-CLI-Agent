@@ -19,6 +19,7 @@ import {
   calculateCost,
   isValidGeminiModel,
   getTimeout,
+  formatTimeout,
   CONFIG
 } from '../src/config/index.js';
 
@@ -179,6 +180,27 @@ describe('Helper Functions', () => {
 
     it('should return default for invalid type', () => {
       assert.strictEqual(getTimeout('INVALID_TYPE'), TIMEOUTS.DEFAULT);
+    });
+  });
+
+  describe('formatTimeout', () => {
+    it('should format milliseconds', () => {
+      assert.strictEqual(formatTimeout(500), '500ms');
+    });
+
+    it('should format seconds', () => {
+      assert.strictEqual(formatTimeout(5000), '5s');
+      assert.strictEqual(formatTimeout(1500), '1.5s');
+    });
+
+    it('should format minutes', () => {
+      assert.strictEqual(formatTimeout(60000), '1m');
+      assert.strictEqual(formatTimeout(90000), '1.5m');
+    });
+
+    it('should handle infinite/NaN', () => {
+      assert.strictEqual(formatTimeout(Infinity), 'unknown');
+      assert.strictEqual(formatTimeout(NaN), 'unknown');
     });
   });
 });
