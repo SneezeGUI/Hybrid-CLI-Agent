@@ -1,4 +1,4 @@
-# Gemini Worker MCP - System-Wide Instructions
+# Gemini Worker MCP - System-Wide Instructions (v0.3.8)
 
 > **Gemini is FREE. Use `gemini_agent_task` for EVERYTHING.**
 
@@ -42,9 +42,18 @@ Read(docs) → Read(README) → memory_bank_read() → Explore() → 34 more cal
 ```json
 {
   "task_description": "Full description including: what to build, tests to write, run tests until ALL pass",
-  "context_files": ["relevant/files.js"]
+  "context_files": ["relevant/files.js"],
+  "stall_timeout_seconds": 120,
+  "verbose": false,
+  "max_retries": 0
 }
 ```
+
+**New v0.3.7 Parameters:**
+- `stall_timeout_seconds` (default: 300) - Time before stall detection triggers (increased to 5 min)
+- `verbose` (default: false) - Include larger output (up to 100k chars)
+- `max_retries` (default: 0) - Auto-retry on transient failures
+
 > **No `max_iterations` needed!** Gemini is FREE - let it run until done.
 
 **Why agent mode is best:**
@@ -86,6 +95,11 @@ Read(docs) → Read(README) → memory_bank_read() → Explore() → 34 more cal
 - Security decisions requiring human judgment
 - **Single** tiny fix (ONE edit, ONE file, <5 lines)
 
+### ⚠️ Git Commit Rules:
+- **NEVER add Co-Authored-By lines** - User is the sole author
+- **NEVER add "Generated with Claude Code" footers**
+- Keep commit messages clean and professional
+
 ### ⚠️ STOP: Multiple Edits = Use Agent!
 **If you need 2+ edits, STOP and use `gemini_agent_task` instead.**
 
@@ -94,9 +108,51 @@ Each Edit tool call costs tokens. Batch edits in one agent task = FREE.
 ❌ **BAD:** Edit → Edit → Edit (3x token cost)
 ✅ **GOOD:** One agent task with all changes listed
 
+---
+
+## 🚨 EXCEPTIONS: When Claude Acts Directly
+
+### Manual Override
+If user explicitly says **"manually"**, **"yourself"**, **"directly"**, or **"don't use Gemini"**:
+→ Claude handles the task directly without delegation
+
+### Failsafe: 3x Gemini Failure
+If `gemini_agent_task` fails **3 times** on the same task:
+→ Claude takes over and completes task directly
+→ Log: "Gemini failed 3x on this task, completing manually"
+
+### Background Mode (Long Tasks)
+For tasks expected to take >2 minutes (large test suites, full builds, 50+ file refactors):
+```json
+{
+  "task_description": "Run full test suite and fix all failures",
+  "background": true,
+  "max_retries": 2
+}
+```
+
+Then poll status with `gemini_agent_list` and complete other work while waiting.
+
 ### Cost Reality:
 - **Claude tokens**: $5-25/million (EXPENSIVE)
 - **Gemini tokens**: $0 (FREE - no limits needed!)
+
+---
+
+## ⚠️ MANDATORY: Auto-Review Workflow
+
+When `gemini_agent_task` modifies files, it returns **PENDING_REVIEW** status.
+**You MUST call `gemini_agent_approve` to finalize or reject changes.**
+
+```
+gemini_agent_task → PENDING_REVIEW → gemini_agent_approve → COMPLETED/REJECTED
+```
+
+**To approve:** `{ "session_id": "abc-123", "approved": true }`
+
+**To reject:** `{ "session_id": "abc-123", "approved": false, "feedback": "reason" }`
+
+> ⚠️ Gemini makes more mistakes than Opus. This ensures Claude reviews all file changes.
 
 ---
 
@@ -162,77 +218,47 @@ Each Edit tool call costs tokens. Batch edits in one agent task = FREE.
 
 ---
 
-## Available MCP Tools (Agent Mode)
+## Verified Agent Capabilities (v0.3.7)
 
-When `GEMINI_AGENT_MODE=true`, only essential tools are registered:
+Tested and confirmed working:
+- ✅ **File system**: Create, read, write, delete files within workspace
+- ✅ **Shell commands**: npm, node, git, pytest, build tools
+- ✅ **Google Search**: Live web search for docs, APIs, solutions
+- ✅ **Security sandbox**: Path traversal blocked, stays within workspace
+- ✅ **Error handling**: Clear messages for missing files, failed commands
 
-### ⭐ Agent Tools (PRIMARY)
+---
 
-**`gemini_agent_task`** - Delegate ANY task to Gemini. No limits needed - it's FREE!
+## Available MCP Tools (8 Total)
+
+### ⭐ Agent Tools (4) - PRIMARY
+
+**`gemini_agent_task`** - Delegate ANY task to Gemini
 ```json
 {
-  "task_description": "Create auth middleware with tests, run npm test until ALL pass, fix any failures",
-  "context_files": ["src/app.js", "package.json"]
+  "task_description": "Create auth middleware with tests, run npm test until ALL pass",
+  "context_files": ["src/app.js", "package.json"],
+  "stall_timeout_seconds": 120,
+  "verbose": false,
+  "max_retries": 0
 }
 ```
-> **No `max_iterations` needed!** Gemini is FREE - let it run until done.
-
-Capabilities:
-- Native file system access (read/write/create)
-- Shell command execution (npm test, pytest, git, build, etc.)
-- **Run tests and fix failures until ALL pass**
-- Iterative development (write → test → fix → repeat)
-- **Google Search** for docs, APIs, latest syntax
-- **Web browsing** for live documentation
-- **Code review AND fix** issues found
-- Session persistence for resume
 
 **`gemini_agent_list`** - List active agent sessions
 
 **`gemini_agent_clear`** - Delete an agent session
 
-### Multi-Model (Different AI perspectives)
-
-**`ai_collaboration`** - Multi-model debates, validation, or pipelines
+**`gemini_agent_approve`** - Approve/reject file changes from agent task
 ```json
-{
-  "mode": "debate",
-  "content": "Should we use microservices or monolith?",
-  "models": "gemini-2.5-flash,openai/gpt-4.1-mini",
-  "rounds": 3
-}
+{ "session_id": "abc-123", "approved": true }
 ```
 
-**`cross_model_comparison`** - Compare responses from multiple AI models
+### System Tools (4)
 
-### OpenRouter (400+ Models)
-
-**`openrouter_chat`** - Chat with GPT-4, Llama, Claude, etc.
-**`openrouter_models`** - List available models with pricing
-**`openrouter_usage_stats`** - Usage statistics
-
-### Utilities
-
-**`gemini_auth_status`** - Check authentication status
+**`gemini_auth_status`** - Check authentication status and available models
+**`gemini_health_check`** - Verify system health and connectivity
 **`gemini_config_show`** - Show current configuration
-**`gemini_cache_manage`** - Manage response cache
-**`hybrid_metrics`** - Get comprehensive agent metrics
-**`review_code_changes`** - Pre-commit review
-
----
-
-## Legacy Mode (All 30 Tools)
-
-When `GEMINI_AGENT_MODE=false` (or not set), all tools are available including:
-- `research_heavy_context`, `summarize_directory`, `gemini_summarize_files`
-- `draft_code_implementation` (deprecated)
-- `gemini_code_review`, `gemini_git_diff_review`
-- `gemini_eval_plan`, `gemini_verify_solution`
-- `ask_gemini`, `gemini_prompt`
-- `gemini_content_comparison`, `gemini_extract_structured`
-- Conversation tools
-
-**Recommendation:** Enable Agent Mode. It does everything the legacy tools do, better.
+**`hybrid_metrics`** - Get usage statistics and token counts
 
 ---
 
@@ -255,6 +281,10 @@ When `GEMINI_AGENT_MODE=false` (or not set), all tools are available including:
 | Single tiny fix (<5 lines) | Claude Edit (ONE edit only!) |
 | List agent sessions | `gemini_agent_list` |
 | Clean up session | `gemini_agent_clear` |
+| Check auth status | `gemini_auth_status` |
+| System health check | `gemini_health_check` |
+| View configuration | `gemini_config_show` |
+| Usage metrics | `hybrid_metrics` |
 
 ---
 
@@ -276,7 +306,7 @@ User asks about project    → gemini_agent_task (NOT memory_bank_read!)
 User asks about latest docs → gemini_agent_task (Google Search!)
 User needs API reference   → gemini_agent_task (Google Search!)
 
-You review → git diff → Approve or iterate
+You review → gemini_agent_approve → git commit
 ```
 
 **Agent mode handles 95% of ALL tasks autonomously. It's FREE - no limits needed!**

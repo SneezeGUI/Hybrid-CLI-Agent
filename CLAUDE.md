@@ -1,4 +1,4 @@
-# Hybrid Agent System - Claude Instructions
+# Hybrid Agent System - Claude Instructions (v0.3.8)
 
 ## ⛔ STOP - READ THIS BEFORE EVERY ACTION
 
@@ -77,6 +77,11 @@ Read(file1) → Read(file2) → Search(pattern) → Explore() → Read(file3)...
 | ✅ Security decisions | When human judgment needed |
 | ✅ Single tiny fix | ONE edit, ONE file, <5 lines |
 
+### ⚠️ Git Commit Rules:
+- **NEVER add Co-Authored-By lines** - User is the sole author
+- **NEVER add "Generated with Claude Code" footers**
+- Keep commit messages clean and professional
+
 ### ⚠️ STOP: Multiple Edits = Use Agent!
 **If you're about to make 2+ edits (same file or different files), STOP and delegate to `gemini_agent_task` instead.**
 
@@ -99,15 +104,71 @@ Edit file2.js (line 20)
 
 ---
 
+## 🚨 EXCEPTIONS: When Claude Acts Directly
+
+### Manual Override
+If user explicitly says **"manually"**, **"yourself"**, **"directly"**, or **"don't use Gemini"**:
+→ Claude handles the task directly without delegation
+
+### Failsafe: 3x Gemini Failure
+If `gemini_agent_task` fails **3 times** on the same task:
+→ Claude takes over and completes task directly
+→ Log: "Gemini failed 3x on this task, completing manually"
+
+### Background Mode (Long Tasks)
+For tasks expected to take >2 minutes (large test suites, full builds, 50+ file refactors):
+```json
+{
+  "task_description": "Run full test suite and fix all failures",
+  "background": true,
+  "max_retries": 2
+}
+```
+
+Then poll status with `gemini_agent_list` and complete other work while waiting.
+
+---
+
 ## Workflow: ALWAYS Follow This
 
 ### 🚀 For EVERYTHING (USE AGENT MODE):
 ```
 1. DELEGATE → gemini_agent_task (describe full task)
 2. WAIT → Agent handles everything autonomously
-3. REVIEW → git diff or git status to see changes
-4. APPROVE → If good, commit. If not, new agent task with feedback.
+3. REVIEW → If files changed, YOU MUST APPROVE (see below)
+4. APPROVE → Use gemini_agent_approve or commit directly
 ```
+
+### ⚠️ MANDATORY: Auto-Review Workflow
+
+When `gemini_agent_task` modifies files, it returns **PENDING_REVIEW** status.
+**You MUST call `gemini_agent_approve` to finalize or reject changes.**
+
+**Workflow:**
+```
+gemini_agent_task → PENDING_REVIEW → gemini_agent_approve → COMPLETED/REJECTED
+```
+
+**To approve changes:**
+```json
+{ "session_id": "abc-123", "approved": true }
+```
+
+**To reject with feedback:**
+```json
+{ "session_id": "abc-123", "approved": false, "feedback": "reason for rejection" }
+```
+
+**To approve with inline fixes:**
+```json
+{
+  "session_id": "abc-123",
+  "approved": true,
+  "fixes": [{ "file": "src/config.js", "search": "old text", "replace": "new text" }]
+}
+```
+
+> ⚠️ **Why?** Gemini is fast but makes more mistakes than Opus. This ensures Claude Opus reviews all file modifications before they're finalized.
 
 **Example: Writing Code + Tests**
 ```json
@@ -168,10 +229,14 @@ Edit file2.js (line 20)
 ```
 > **Why batch?** 5 Edit calls = 5x token cost. One agent task = FREE!
 
-### ⚠️ Legacy Tools (Only if agent mode disabled):
-- `research_heavy_context` - For reading many files
-- `gemini_eval_plan` - For plan evaluation
-- `draft_code_implementation` - DEPRECATED, use agent
+## Verified Agent Capabilities (v0.3.7)
+
+Tested and confirmed working:
+- ✅ **File system**: Create, read, write, delete files within workspace
+- ✅ **Shell commands**: npm, node, git, pytest, build tools
+- ✅ **Google Search**: Live web search for docs, APIs, solutions
+- ✅ **Security sandbox**: Path traversal blocked, stays within workspace
+- ✅ **Error handling**: Clear messages for missing files, failed commands
 
 ---
 
@@ -215,6 +280,10 @@ Edit file2.js (line 20)
 | Single tiny fix (<5 lines) | Claude Edit (ONE edit only!) |
 | List running agents | `gemini_agent_list` |
 | Clean up agent session | `gemini_agent_clear` |
+| Check auth status | `gemini_auth_status` |
+| System health check | `gemini_health_check` |
+| View configuration | `gemini_config_show` |
+| Usage metrics | `hybrid_metrics` |
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "hybrid-cli-agent",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Multi-agent CLI orchestrator combining Claude Code, Gemini CLI, and OpenRouter with 400+ AI models",
   "type": "module",
   "main": "src/orchestrator/index.js",
