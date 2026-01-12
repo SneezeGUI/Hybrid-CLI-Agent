@@ -11,7 +11,13 @@ import { TIMEOUTS } from '../../../config/timeouts.js';
  * Get hybrid agent metrics
  */
 async function handleHybridMetrics(args, context) {
-  const { AUTH_CONFIG, getDefaultModel, openrouterStats } = context;
+  const { AUTH_CONFIG, getDefaultModel, tokenTracker } = context;
+  const geminiStats = tokenTracker.getStats();
+
+  // Format per-model breakdown
+  const modelBreakdown = Object.entries(geminiStats.byModel)
+    .map(([model, stats]) => `  - ${model}: ${stats.input.toLocaleString()} in / ${stats.output.toLocaleString()} out (${stats.requests} reqs)`)
+    .join('\n') || '  (no requests yet)';
 
   return success(`# Hybrid Agent Metrics
 
@@ -20,12 +26,15 @@ async function handleHybridMetrics(args, context) {
 - Free tier: ${AUTH_CONFIG.method === 'oauth' ? 'Yes (60 RPM, 1000 RPD)' : 'No'}
 - Default model: ${getDefaultModel()}
 
-## OpenRouter
-- API key configured: ${process.env.OPENROUTER_API_KEY ? 'Yes' : 'No'}
-- Session requests: ${openrouterStats.requests}
-- Input tokens: ${openrouterStats.inputTokens.toLocaleString()}
-- Output tokens: ${openrouterStats.outputTokens.toLocaleString()}
-- Estimated cost: $${openrouterStats.estimatedCost.toFixed(4)}
+### Token Usage (Session)
+- Requests: ${geminiStats.requestCount}
+- Input tokens: ${geminiStats.totalInput.toLocaleString()}
+- Output tokens: ${geminiStats.totalOutput.toLocaleString()}
+- Total tokens: ${geminiStats.totalTokens.toLocaleString()}
+- Estimated cost: ${geminiStats.costNote}
+
+### By Model
+${modelBreakdown}
 
 ## Available Tools: 7
 - Core Tools: 4

@@ -4,8 +4,11 @@
  */
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFile, stat } from 'fs/promises';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
+import { glob } from 'glob';
+import { getContextFileCache } from '../../utils/file-cache.js';
 import { OUTPUT_LIMITS, TIMEOUTS } from '../../config/timeouts.js';
 import {
   HybridError,
@@ -134,6 +137,141 @@ export function runGitDiff({ spawn, safeSpawn, patterns = [], staged = true, tim
       if (!killed) resolve('Failed to get git diff');
     });
   });
+}
+
+/**
+ * Read files from glob patterns with memory protection and optional caching
+ * @param {string[]} patterns - Glob patterns
+ * @param {string} baseDir - Base directory
+ * @param {Object} options - Options
+ * @param {number} [options.maxFileSize=512000] - Max bytes per file (default 500KB)
+ * @param {number} [options.maxTotalSize=5242880] - Max total bytes (default 5MB)
+ * @param {number} [options.maxFiles=100] - Max number of files (default 100)
+ * @param {boolean} [options.useCache=true] - Use file content cache (default true)
+ * @returns {Promise<Array<{path: string, content: string, fromCache?: boolean, skipped?: boolean, truncated?: boolean, error?: boolean}>>}
+ */
+export async function readFilesFromPatterns(patterns, baseDir = process.cwd(), options = {}) {
+  const {
+    maxFileSize = 500 * 1024,    // 500KB per file
+    maxTotalSize = 5 * 1024 * 1024, // 5MB total
+    maxFiles = 100,
+    useCache = true,
+  } = options;
+
+  const results = [];
+  let totalSize = 0;
+  let cacheHits = 0;
+  let cacheMisses = 0;
+  const logger = getLogger();
+
+  // Get file cache if caching is enabled
+  const fileCache = useCache ? getContextFileCache() : null;
+
+  for (const pattern of patterns) {
+    if (results.length >= maxFiles) {
+      logger.warn(`Max files limit reached (${maxFiles})`, { event: 'read_files_limit' });
+      break;
+    }
+
+    try {
+      const matches = await glob(pattern, {
+        cwd: baseDir,
+        absolute: true,
+        nodir: true,
+      });
+
+      for (const filepath of matches) {
+        if (results.length >= maxFiles) break;
+        if (totalSize >= maxTotalSize) {
+          logger.warn(`Max total size reached (${maxTotalSize} bytes)`, { event: 'read_files_size_limit' });
+          break;
+        }
+
+        try {
+          // Check file size before reading
+          const stats = await stat(filepath);
+
+          if (stats.size > maxFileSize) {
+            // Skip very large files with warning
+            const relativePath = filepath.replace(baseDir, '').replace(/^[\/\\]/, '');
+            results.push({
+              path: relativePath,
+              content: `[File too large: ${(stats.size / 1024).toFixed(1)}KB > ${(maxFileSize / 1024).toFixed(1)}KB limit]`,
+              skipped: true,
+            });
+            continue;
+          }
+
+          // Use cache if available, otherwise read directly
+          let content;
+          let fromCache = false;
+
+          if (fileCache) {
+            const cached = await fileCache.getFile(filepath);
+            if (cached) {
+              content = cached.content;
+              fromCache = cached.fromCache;
+              if (fromCache) {
+                cacheHits++;
+              } else {
+                cacheMisses++;
+              }
+            }
+          }
+
+          // Fallback to direct read if cache is disabled or getFile returned null
+          if (content === undefined) {
+            content = await readFile(filepath, 'utf-8');
+            cacheMisses++;
+          }
+
+          const relativePath = filepath.replace(baseDir, '').replace(/^[\/\\]/, '');
+
+          // Check if this would exceed total size
+          if (totalSize + content.length > maxTotalSize) {
+            // Truncate to fit
+            const available = maxTotalSize - totalSize;
+            const truncated = content.slice(0, available) + '\n... [truncated due to total size limit]';
+            results.push({ path: relativePath, content: truncated, truncated: true });
+            totalSize = maxTotalSize;
+            break;
+          }
+
+          results.push({ path: relativePath, content, fromCache });
+          totalSize += content.length;
+        } catch (e) {
+          // Report unreadable files instead of silently skipping
+          const relativePath = filepath.replace(baseDir, '').replace(/^[\/\\]/, '');
+          results.push({
+            path: relativePath,
+            content: `[ERROR: Could not read file - ${e.code || e.message}]`,
+            error: true,
+          });
+        }
+      }
+    } catch (e) {
+      // Report invalid patterns instead of silently skipping
+      results.push({
+        path: pattern,
+        content: `[ERROR: Invalid pattern or glob error - ${e.message}]`,
+        error: true,
+      });
+    }
+  }
+
+  // Log cache stats if caching was used
+  if (fileCache && (cacheHits > 0 || cacheMisses > 0)) {
+    const hitRate = cacheHits + cacheMisses > 0
+      ? Math.round((cacheHits / (cacheHits + cacheMisses)) * 100)
+      : 0;
+    logger.debug(`Cache stats: ${cacheHits} hits, ${cacheMisses} misses (${hitRate}% hit rate)`, {
+      event: 'read_files_cache_stats',
+      hits: cacheHits,
+      misses: cacheMisses
+    });
+  }
+
+  return results;
 }
 
 /**
@@ -666,6 +804,7 @@ export default {
   formatted,
   validateRequired,
   runGitDiff,
+  readFilesFromPatterns,
   fetchWithTimeout,
   cleanCodeOutput,
   withHandler,
