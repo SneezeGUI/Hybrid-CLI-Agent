@@ -6,7 +6,7 @@
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
-import { OUTPUT_LIMITS } from '../../config/timeouts.js';
+import { OUTPUT_LIMITS, TIMEOUTS } from '../../config/timeouts.js';
 import {
   HybridError,
   ValidationError,
@@ -108,7 +108,7 @@ export function validateRequired(args, required) {
  * @param {number} [options.timeout=10000] - Timeout in milliseconds
  * @returns {Promise<string>} Git diff output
  */
-export function runGitDiff({ spawn, safeSpawn, patterns = [], staged = true, timeout = 10000 }) {
+export function runGitDiff({ spawn, safeSpawn, patterns = [], staged = true, timeout = TIMEOUTS.GIT_DIFF }) {
   return new Promise((resolve) => {
     const args = ['diff'];
     if (staged) args.push('--staged');
@@ -143,7 +143,7 @@ export function runGitDiff({ spawn, safeSpawn, patterns = [], staged = true, tim
  * @param {number} [timeout=60000] - Timeout in milliseconds
  * @returns {Promise<Response>} Fetch response
  */
-export async function fetchWithTimeout(url, options = {}, timeout = 60000) {
+export async function fetchWithTimeout(url, options = {}, timeout = TIMEOUTS.FETCH) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 

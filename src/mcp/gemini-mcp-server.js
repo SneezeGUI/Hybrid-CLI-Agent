@@ -60,6 +60,7 @@ import {
   GEMINI_MODELS,
   GEMINI_PRICING,
   RATE_LIMITS,
+  AUTH_DEFAULTS,
 } from '../config/index.js';
 
 // ============================================================================ 
@@ -81,7 +82,7 @@ const AUTH_CONFIG = {
   apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
   vertexKey: process.env.VERTEX_API_KEY,
   vertexProject: process.env.VERTEX_PROJECT,
-  vertexLocation: process.env.VERTEX_LOCATION || 'us-central1',
+  vertexLocation: process.env.VERTEX_LOCATION || AUTH_DEFAULTS.vertexLocation,
   // Fallback chain
   fallbackChain: buildFallbackChain(),
   // Current active method (may change after fallback)
@@ -125,7 +126,7 @@ function buildFallbackChain() {
       env: {
         VERTEX_API_KEY: process.env.VERTEX_API_KEY,
         VERTEX_PROJECT: process.env.VERTEX_PROJECT,
-        VERTEX_LOCATION: process.env.VERTEX_LOCATION || 'us-central1',
+        VERTEX_LOCATION: process.env.VERTEX_LOCATION || AUTH_DEFAULTS.vertexLocation,
       },
     });
   }
@@ -183,7 +184,7 @@ function getActiveAuthMethod() {
  * Reset auth failures after a timeout to allow retrying
  * Failed methods are reset after 5 minutes
  */
-const AUTH_FAILURE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+const AUTH_FAILURE_TIMEOUT = RATE_LIMITS.authFailureTimeoutMs; // 5 minutes
 
 function resetExpiredAuthFailures() {
   const now = Date.now();
@@ -1000,7 +1001,7 @@ const server = new Server(
 );
 
 // ============================================================================ 
-// Tool Definitions (7 Tools)
+// Tool Definitions (8 Tools)
 // ============================================================================ 
 
 const ALL_TOOLS = [
@@ -1008,7 +1009,7 @@ const ALL_TOOLS = [
   {
     name: 'gemini_auth_status',
     description: `Check Gemini authentication status and available features.
-Returns info about which auth method is being used and what models are available.`, 
+Returns info about which auth method is being used and what models are available.`,
     inputSchema: {
       type: 'object',
       properties: {},
@@ -1018,7 +1019,7 @@ Returns info about which auth method is being used and what models are available
   {
     name: 'hybrid_metrics',
     description: `Get comprehensive metrics for the hybrid agent.
-Shows costs, usage, and performance stats for both Gemini and OpenRouter.`, 
+Shows costs, usage, and performance stats for both Gemini and OpenRouter.`,
     inputSchema: {
       type: 'object',
       properties: {},
@@ -1029,7 +1030,7 @@ Shows costs, usage, and performance stats for both Gemini and OpenRouter.`,
     name: 'gemini_config_show',
     description: `Show current configuration and environment settings.
 USE THIS to verify your setup is correct and see active settings.
-Sensitive values (API keys) are masked for security.`, 
+Sensitive values (API keys) are masked for security.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1046,7 +1047,7 @@ Sensitive values (API keys) are masked for security.`,
     name: 'gemini_health_check',
     description: `Check Gemini CLI health and connectivity.
 USE THIS to verify the system is working correctly, measure latency, and check model availability.
-Returns overall health status, authentication status, and cache statistics.`, 
+Returns overall health status, authentication status, and cache statistics.`,
     inputSchema: {
       type: 'object',
       properties: {},
@@ -1083,7 +1084,7 @@ WORKFLOW:
 2. Monitor progress via structured output
 3. Resume interrupted sessions with session_id
 4. Review results with \`git diff
-`, 
+`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1116,8 +1117,8 @@ WORKFLOW:
         },
         stall_timeout_seconds: {
           type: 'integer',
-          default: 120,
-          description: 'Time in seconds without activity before stall timeout',
+          default: 300,
+          description: 'Time in seconds without activity before stall timeout (5 min default)',
         },
         verbose: {
           type: 'boolean',
@@ -1128,6 +1129,11 @@ WORKFLOW:
           type: 'integer',
           default: 0,
           description: 'Number of auto-retries for transient failures',
+        },
+        background: {
+          type: 'boolean',
+          default: false,
+          description: 'Run task in background - returns immediately with session_id for polling via gemini_agent_list',
         },
         model: {
           type: 'string',
@@ -1141,13 +1147,13 @@ WORKFLOW:
   {
     name: 'gemini_agent_list',
     description: `List active agent sessions.
-USE THIS to see running or completed agent tasks and their status.`, 
+USE THIS to see running or completed agent tasks and their status.`,
     inputSchema: {
       type: 'object',
       properties: {
         status: {
           type: 'string',
-          enum: ['pending', 'running', 'completed', 'failed'],
+          enum: ['pending', 'running', 'pending_review', 'completed', 'rejected', 'failed'],
           description: 'Filter by session status',
         },
       },
@@ -1156,7 +1162,7 @@ USE THIS to see running or completed agent tasks and their status.`,
   {
     name: 'gemini_agent_clear',
     description: `Clear/delete an agent session.
-USE THIS to clean up completed or failed sessions.`, 
+USE THIS to clean up completed or failed sessions.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1166,6 +1172,55 @@ USE THIS to clean up completed or failed sessions.`,
         },
       },
       required: ['session_id'],
+    },
+  },
+  {
+    name: 'gemini_agent_approve',
+    description: `**REQUIRED** - Approve or reject changes from a Gemini agent task.
+
+USE THIS AFTER any gemini_agent_task that returns PENDING_REVIEW status.
+
+This tool enforces Claude review of all file modifications made by Gemini.
+
+WORKFLOW:
+1. gemini_agent_task returns PENDING_REVIEW with file changes
+2. Review the changes carefully
+3. Call gemini_agent_approve to approve or reject
+
+OPTIONS:
+- approved: true → Changes are finalized
+- approved: false → Session marked rejected
+- fixes: Apply inline corrections before approving`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'Session ID from the pending review',
+        },
+        approved: {
+          type: 'boolean',
+          description: 'Whether to approve the changes',
+        },
+        fixes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              file: { type: 'string', description: 'Path to file to fix' },
+              search: { type: 'string', description: 'Text to find' },
+              replace: { type: 'string', description: 'Replacement text' },
+            },
+            required: ['file', 'search', 'replace'],
+          },
+          description: 'Optional inline fixes to apply before finalizing',
+        },
+        feedback: {
+          type: 'string',
+          description: 'Feedback if rejecting (explains why)',
+        },
+      },
+      required: ['session_id', 'approved'],
     },
   },
 ];
@@ -1182,7 +1237,7 @@ const TOOLS = ALL_TOOLS;
 
 // Log active mode
 if (isAgentModeEnabled()) {
-  console.error('[gemini-worker] Agent Mode ENABLED - all 7 tools active');
+  console.error('[gemini-worker] Agent Mode ENABLED - all 8 tools active');
 } else {
   console.error('[gemini-worker] Agent Mode DISABLED - agent tools will require enablement');
 }
@@ -1283,7 +1338,8 @@ ${status.tips.length > 0 ? '\nTips:\n' + status.tips.map(t => '- ' + t).join('\n
           .join('\n') || '  (no requests yet)';
 
         return {
-          content: [{ type: 'text', text: `# Hybrid Agent Metrics
+          content: [{
+            type: 'text', text: `# Hybrid Agent Metrics
 
 ## Gemini CLI
 - Auth method: ${authInfo.method}
@@ -1303,9 +1359,9 @@ ${modelBreakdown}
 ## OpenRouter (Removed)
 - OpenRouter tools have been removed in this version.
 
-## Available Tools: 7
+## Available Tools: 8
 - Core Tools: 4
-- Agent Tools: 3` }],
+- Agent Tools: 4` }],
         };
       }
 
@@ -1478,7 +1534,8 @@ ${modelStatus}
 
         const emoji = { healthy: '✅', degraded: '⚠️', unhealthy: '❌', unknown: '❓' };
         return {
-          content: [{ type: 'text', text: `# Gemini Health Check
+          content: [{
+            type: 'text', text: `# Gemini Health Check
 
 ## Overall Status: ${emoji[healthResult.status]} ${healthResult.status.toUpperCase()}
 
@@ -1502,7 +1559,8 @@ ${healthResult.cache.entries !== undefined ? `- Entries: ${healthResult.cache.en
 ${healthResult.cache.hitRate !== undefined ? `- Hit rate: ${healthResult.cache.hitRate}` : ''}
 
 ## Timestamp
-${healthResult.timestamp}` }],
+${healthResult.timestamp}`
+          }],
         };
       }
 
@@ -1510,7 +1568,8 @@ ${healthResult.timestamp}` }],
 
       case 'gemini_agent_task':
       case 'gemini_agent_list':
-      case 'gemini_agent_clear': {
+      case 'gemini_agent_clear':
+      case 'gemini_agent_approve': {
         // Import handler dynamically to avoid circular dependencies
         const { handlers: agentHandlers } = await import('./tool-handlers/agent/index.js');
         const handler = agentHandlers[name];

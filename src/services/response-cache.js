@@ -15,17 +15,13 @@ import { createHash } from 'crypto';
 import { writeFile, readFile, mkdir } from 'fs/promises';
 import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
+import { CACHE_CONFIG } from '../config/timeouts.js';
 
 /**
- * Default configuration
+ * Local defaults that extend centralized config
  */
-const DEFAULT_CONFIG = {
-  maxEntries: 1000,              // Max cached responses
-  defaultTTL: 30 * 60 * 1000,    // 30 minutes default TTL
-  maxTTL: 24 * 60 * 60 * 1000,   // 24 hours max TTL
-  cleanupInterval: 5 * 60 * 1000, // Cleanup every 5 minutes
-  persistPath: null,              // Path for persistence (disabled by default)
-  persistDebounceMs: 5000,        // Debounce persistence writes (5 seconds)
+const LOCAL_DEFAULTS = {
+  persistPath: null,  // Path for persistence (disabled by default)
 };
 
 /**
@@ -33,7 +29,7 @@ const DEFAULT_CONFIG = {
  */
 export class ResponseCache {
   constructor(config = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = { ...CACHE_CONFIG, ...LOCAL_DEFAULTS, ...config };
     this.cache = new Map();
     this.accessOrder = []; // For LRU eviction
     this.stats = {

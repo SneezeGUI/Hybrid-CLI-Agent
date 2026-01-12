@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { AGENT_LIMITS } from '../config/timeouts.js';
+import { AGENT_LIMITS, OUTPUT_LIMITS } from '../config/timeouts.js';
 import { calculateCost } from '../config/pricing.js';
 
 /**
@@ -8,7 +8,9 @@ import { calculateCost } from '../config/pricing.js';
 export const SessionStatus = {
   PENDING: 'pending',
   RUNNING: 'running',
+  PENDING_REVIEW: 'pending_review',  // Awaiting Claude approval
   COMPLETED: 'completed',
+  REJECTED: 'rejected',              // Changes rejected by reviewer
   FAILED: 'failed',
 };
 
@@ -98,6 +100,13 @@ class AgentSessionManager {
       autoRetries: 0, // Number of auto-retries attempted
       maxAutoRetries: options.maxAutoRetries || AGENT_LIMITS.MAX_AUTO_RETRIES,
 
+      // Review tracking (for auto-review workflow)
+      pendingChanges: null,  // Stores diff/files awaiting approval
+      reviewedAt: null,      // When review was completed
+      reviewedBy: null,      // Who approved (e.g., 'claude-opus')
+      approvalStatus: null,  // 'approved', 'rejected', or null
+      reviewFeedback: null,  // Feedback if rejected
+
       // Final result
       result: null,
       error: null,
@@ -171,6 +180,81 @@ class AgentSessionManager {
   }
 
   /**
+   * Records a file mutation for PENDING_REVIEW tracking
+   * @param {string} sessionId Session ID
+   * @param {string} type Mutation type: 'create', 'modify', or 'delete'
+   * @param {string} filePath Path of the affected file
+   */
+  recordFileMutation(sessionId, type, filePath) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    switch (type) {
+      case 'create':
+        if (!session.filesCreated.includes(filePath)) {
+          session.filesCreated.push(filePath);
+        }
+        break;
+      case 'modify':
+        if (!session.filesModified.includes(filePath)) {
+          session.filesModified.push(filePath);
+        }
+        break;
+      case 'delete':
+        if (!session.filesDeleted.includes(filePath)) {
+          session.filesDeleted.push(filePath);
+        }
+        break;
+    }
+    session.updatedAt = Date.now();
+  }
+
+  /**
+   * Sets session to pending review with changes awaiting approval
+   * @param {string} sessionId Session ID
+   * @param {Object} changes Changes awaiting approval
+   * @param {string[]} [changes.filesModified] Files that were modified
+   * @param {string[]} [changes.filesCreated] Files that were created
+   * @param {string} [changes.diff] Git diff of changes
+   * @param {string} [changes.summary] Summary of what changed
+   */
+  setPendingReview(sessionId, changes) {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.pendingChanges = changes;
+      session.status = SessionStatus.PENDING_REVIEW;
+      session.updatedAt = Date.now();
+    }
+  }
+
+  /**
+   * Sets the approval status after review
+   * @param {string} sessionId Session ID
+   * @param {boolean} approved Whether changes were approved
+   * @param {Object} [options] Additional options
+   * @param {string} [options.reviewedBy] Who performed the review
+   * @param {string} [options.feedback] Feedback if rejected
+   * @returns {boolean} True if status was set successfully
+   */
+  setApprovalStatus(sessionId, approved, options = {}) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    if (session.status !== SessionStatus.PENDING_REVIEW) {
+      return false; // Can only approve/reject sessions in PENDING_REVIEW state
+    }
+
+    session.reviewedAt = Date.now();
+    session.reviewedBy = options.reviewedBy || 'unknown';
+    session.approvalStatus = approved ? 'approved' : 'rejected';
+    session.reviewFeedback = options.feedback || null;
+    session.status = approved ? SessionStatus.COMPLETED : SessionStatus.REJECTED;
+    session.updatedAt = Date.now();
+
+    return true;
+  }
+
+  /**
    * Check if a session can be auto-retried
    * @param {string} sessionId Session ID
    * @returns {boolean} True if auto-retry is allowed
@@ -235,7 +319,7 @@ class AgentSessionManager {
     session.iterations++;
 
     // Truncate large input/output to prevent memory bloat
-    const MAX_STORED_SIZE = 2000; // ~500 tokens per field
+    const MAX_STORED_SIZE = OUTPUT_LIMITS.TOOL_CALL_MAX_SIZE; // ~500 tokens per field
     const truncateField = (value) => {
       if (typeof value !== 'string') {
         value = value != null ? JSON.stringify(value) : '';

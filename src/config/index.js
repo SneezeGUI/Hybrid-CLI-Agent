@@ -6,11 +6,13 @@
 import * as Models from './models.js';
 import * as Pricing from './pricing.js';
 import * as Timeouts from './timeouts.js';
+import * as Auth from './auth.js';
 
 // Re-export all named exports for direct access
 export * from './models.js';
 export * from './pricing.js';
 export * from './timeouts.js';
+export * from './auth.js';
 
 /**
  * Unified configuration object containing commonly used settings from all config modules.
@@ -68,5 +70,13 @@ export const CONFIG = {
   /**
    * Output size limits for MCP tool responses.
    */
-  outputLimits: Timeouts.OUTPUT_LIMITS
+  outputLimits: Timeouts.OUTPUT_LIMITS,
+
+  /**
+   * Authentication defaults and configuration.
+   */
+  auth: {
+    defaults: Auth.AUTH_DEFAULTS,
+    fallbackOrder: Auth.AUTH_FALLBACK_ORDER,
+  }
 };

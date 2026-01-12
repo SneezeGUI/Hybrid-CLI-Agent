@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { CONVERSATION_CONFIG } from '../config/timeouts.js';
 
 /**
  * Message roles
@@ -33,14 +34,11 @@ export const ConversationState = {
 };
 
 /**
- * Default configuration
+ * Local defaults that extend centralized config
  */
-const DEFAULT_CONFIG = {
-  maxMessages: 100,           // Max messages per conversation
-  maxTokensPerMessage: 32000, // Approximate token limit per message
-  maxTotalTokens: 1000000,    // Max tokens per conversation (Gemini has 1M+ context)
-  expirationMs: 24 * 60 * 60 * 1000, // 24 hours default expiration
-  autoCleanupInterval: 60 * 60 * 1000, // Cleanup expired every hour
+const LOCAL_DEFAULTS = {
+  maxTokensPerMessage: 32000,       // Max tokens per individual message
+  autoCleanupInterval: 60 * 60 * 1000,  // 1 hour - cleanup interval
 };
 
 /**
@@ -48,7 +46,7 @@ const DEFAULT_CONFIG = {
  */
 export class ConversationManager {
   constructor(config = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = { ...CONVERSATION_CONFIG, ...LOCAL_DEFAULTS, ...config };
     this.conversations = new Map();
     this.stats = {
       totalConversations: 0,

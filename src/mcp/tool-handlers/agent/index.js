@@ -58,8 +58,6 @@ function getAgentOutputDir() {
 
 /** Track last cleanup time to avoid running too frequently */
 let lastCleanupTime = 0;
-const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Run at most once per day
-const MAX_FILE_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 /**
  * Clean up old output files (older than 30 days)
@@ -69,7 +67,7 @@ async function cleanupOldOutputFiles() {
   const now = Date.now();
 
   // Skip if we ran cleanup recently
-  if (now - lastCleanupTime < CLEANUP_INTERVAL_MS) {
+  if (now - lastCleanupTime < AGENT_LIMITS.OUTPUT_CLEANUP_INTERVAL_MS) {
     return;
   }
   lastCleanupTime = now;
@@ -93,7 +91,7 @@ async function cleanupOldOutputFiles() {
         const fileStat = await stat(filePath);
         const fileAge = now - fileStat.mtimeMs;
 
-        if (fileAge > MAX_FILE_AGE_MS) {
+        if (fileAge > AGENT_LIMITS.OUTPUT_MAX_AGE_MS) {
           deletedBytes += fileStat.size;
           await unlink(filePath);
           deletedCount++;
@@ -236,7 +234,7 @@ function formatAgentResult(summary, outputInfo = {}, verbose = false) {
     // Calculate available space for result (leave room for header/footer)
     const headerFooterSize = header.length + footer.length + 200; // 200 for separators
     // If verbose, use 100k limit, otherwise use standard MCP hard limit
-    const outputLimit = verbose ? 100000 : OUTPUT_LIMITS.MCP_HARD_LIMIT;
+    const outputLimit = verbose ? OUTPUT_LIMITS.VERBOSE_OUTPUT_MAX : OUTPUT_LIMITS.MCP_HARD_LIMIT;
     const availableForResult = outputLimit - headerFooterSize;
 
     // Check if result needs truncation
@@ -342,21 +340,113 @@ function formatAgentError(summary, err) {
 }
 
 /**
+ * Format PENDING_REVIEW response requiring Claude approval
+ * @param {Object} summary - Session summary from AgentSessionManager
+ * @param {Object} [outputInfo] - Information about output files
+ * @param {boolean} [verbose=false] - Whether to allow larger output
+ * @returns {string} Formatted pending review text
+ */
+function formatPendingReviewResult(summary, outputInfo = {}, verbose = false) {
+  const { fullOutputPath, fullOutputSize, truncated } = outputInfo;
+
+  const lines = [
+    '## ⚠️ PENDING REVIEW - Approval Required',
+    '',
+    'Agent task completed with file modifications. **You must review and approve these changes.**',
+    '',
+    `**Session ID:** \`${summary.id}\``,
+    `**Duration:** ${summary.durationFormatted}`,
+    `**Iterations:** ${summary.iterations}/${summary.maxIterations}`,
+  ];
+
+  if (fullOutputPath) {
+    lines.push(`**Full Output:** \`${fullOutputPath}\` (${(fullOutputSize / 1024).toFixed(1)}KB)`);
+  }
+  lines.push('');
+
+  // List files changed
+  if (summary.files.created.length > 0) {
+    lines.push('### Files Created:');
+    for (const file of summary.files.created) {
+      lines.push(`- \`${file}\``);
+    }
+    lines.push('');
+  }
+
+  if (summary.files.modified.length > 0) {
+    lines.push('### Files Modified:');
+    for (const file of summary.files.modified) {
+      lines.push(`- \`${file}\``);
+    }
+    lines.push('');
+  }
+
+  if (summary.files.deleted.length > 0) {
+    lines.push('### Files Deleted:');
+    for (const file of summary.files.deleted) {
+      lines.push(`- \`${file}\``);
+    }
+    lines.push('');
+  }
+
+  // Add result preview if available
+  if (summary.result) {
+    const previewLength = verbose ? 5000 : 2000;
+    const preview = summary.result.slice(0, previewLength);
+    lines.push('### Agent Response Preview:');
+    lines.push('');
+    lines.push(preview);
+    if (summary.result.length > previewLength) {
+      lines.push(`\n... [truncated - see full output file]`);
+    }
+    lines.push('');
+  }
+
+  // Add required action
+  lines.push('---');
+  lines.push('');
+  lines.push('### ⚡ ACTION REQUIRED');
+  lines.push('');
+  lines.push('Review the changes above, then call `gemini_agent_approve` to apply or reject:');
+  lines.push('');
+  lines.push('**To approve:**');
+  lines.push('```json');
+  lines.push(`{ "session_id": "${summary.id}", "approved": true }`);
+  lines.push('```');
+  lines.push('');
+  lines.push('**To reject with feedback:**');
+  lines.push('```json');
+  lines.push(`{ "session_id": "${summary.id}", "approved": false, "feedback": "reason for rejection" }`);
+  lines.push('```');
+  lines.push('');
+  lines.push('**To approve with inline fixes:**');
+  lines.push('```json');
+  lines.push('{');
+  lines.push(`  "session_id": "${summary.id}",`);
+  lines.push('  "approved": true,');
+  lines.push('  "fixes": [{ "file": "path/to/file.js", "search": "old text", "replace": "new text" }]');
+  lines.push('}');
+  lines.push('```');
+
+  return lines.join('\n');
+}
+
+/**
  * Kill process gracefully - SIGTERM first, then SIGKILL after grace period
  * @param {ChildProcess} proc - The process to kill
  * @param {number} graceMs - Grace period before SIGKILL (default 5000ms)
  */
 function killWithGrace(proc, graceMs = 5000) {
   if (!proc || proc.killed) return;
-  
+
   proc.kill('SIGTERM');
-  
+
   const killTimer = setTimeout(() => {
     if (!proc.killed) {
       proc.kill('SIGKILL');
     }
   }, graceMs);
-  
+
   proc.once('exit', () => clearTimeout(killTimer));
 }
 
@@ -429,7 +519,7 @@ async function runAgentProcess({
 
       if (textOutputTruncated) return; // Already at limit for MCP response, skip
 
-      const maxSize = OUTPUT_LIMITS.AGENT_OUTPUT_MAX || 100000;
+      const maxSize = OUTPUT_LIMITS.AGENT_OUTPUT_MAX || OUTPUT_LIMITS.VERBOSE_OUTPUT_MAX;
       if (textOutput.length + text.length > maxSize) {
         // Truncate: keep head and tail for MCP response
         const headTail = OUTPUT_LIMITS.AGENT_OUTPUT_HEAD_TAIL || 20000;
@@ -463,12 +553,12 @@ async function runAgentProcess({
       if (timeSinceActivity > stallTimeout * 0.75 && !stallWarningEmitted) {
         stallWarningEmitted = true;
         const warningSeconds = Math.round(timeSinceActivity / 1000);
-        appendTextOutput(`\n[WARNING] No activity for ${warningSeconds}s - will timeout at ${Math.round(stallTimeout/1000)}s\n`);
+        appendTextOutput(`\n[WARNING] No activity for ${warningSeconds}s - will timeout at ${Math.round(stallTimeout / 1000)}s\n`);
         logger.warn('Agent activity warning', {
           event: 'stall_warning',
           sessionId: session.id,
           inactiveSeconds: warningSeconds,
-          timeoutSeconds: Math.round(stallTimeout/1000)
+          timeoutSeconds: Math.round(stallTimeout / 1000)
         });
       }
 
@@ -527,6 +617,22 @@ async function runAgentProcess({
               input: event.tool_input || event.input,
               code: event.tool_code,
             });
+
+            // Detect file mutations for PENDING_REVIEW workflow
+            const toolInput = event.tool_input || event.input || {};
+            const filePath = toolInput.path || toolInput.file_path || toolInput.filename || toolInput.target;
+            if (filePath) {
+              const normalizedTool = toolName?.toLowerCase() || '';
+              if (normalizedTool.includes('write_file') || normalizedTool.includes('create_file') ||
+                normalizedTool.includes('save_file')) {
+                sessionManager.recordFileMutation(session.id, 'create', filePath);
+              } else if (normalizedTool.includes('edit_file') || normalizedTool.includes('replace') ||
+                normalizedTool.includes('patch') || normalizedTool.includes('modify')) {
+                sessionManager.recordFileMutation(session.id, 'modify', filePath);
+              } else if (normalizedTool.includes('delete_file') || normalizedTool.includes('remove_file')) {
+                sessionManager.recordFileMutation(session.id, 'delete', filePath);
+              }
+            }
 
             // Emit tool call event
             agentEvents.emit('session:tool_call', {
@@ -641,8 +747,8 @@ async function runAgentProcess({
 
         switch (code) {
           case 1:
-            const iterationInfo = session.iterations > 0 
-              ? `after ${session.iterations} iterations` 
+            const iterationInfo = session.iterations > 0
+              ? `after ${session.iterations} iterations`
               : 'before completing any iterations';
             const lastToolInfo = session.lastToolCalls && session.lastToolCalls.length > 0
               ? `\nLast tools used: ${session.lastToolCalls.slice(-3).map(t => t.tool || 'unknown').join(', ')}`
@@ -688,6 +794,83 @@ async function runAgentProcess({
 }
 
 /**
+ * Run agent process in background (fire-and-forget)
+ * Handles completion asynchronously and updates session state
+ * @param {Object} options Same as runAgentProcess + verbose
+ */
+function runAgentProcessBackground(options) {
+  const { session, sessionManager, verbose } = options;
+
+  // Start the process asynchronously
+  runAgentProcess(options)
+    .then((result) => {
+      // Check if files were modified
+      const session_data = sessionManager.getSession(session.id);
+      const filesChanged = session_data.filesCreated.length > 0 ||
+        session_data.filesModified.length > 0 ||
+        session_data.filesDeleted.length > 0;
+
+      if (filesChanged) {
+        // Set to PENDING_REVIEW
+        session_data.result = result.textOutput;
+        sessionManager.setPendingReview(session.id, {
+          filesCreated: [...session_data.filesCreated],
+          filesModified: [...session_data.filesModified],
+          filesDeleted: [...session_data.filesDeleted],
+          summary: result.textOutput?.slice(0, 2000) || 'Agent task completed',
+        });
+
+        agentEvents.emit('session:pending_review', {
+          sessionId: session.id,
+          iterations: session_data.iterations,
+          filesCreated: session_data.filesCreated.length,
+          filesModified: session_data.filesModified.length,
+          fullOutputPath: result.fullOutputPath,
+        });
+
+        logger.info('Background task completed, pending review', {
+          event: 'background_pending_review',
+          sessionId: session.id,
+          filesChanged: session_data.filesCreated.length + session_data.filesModified.length,
+        });
+      } else {
+        // No files changed - complete directly
+        sessionManager.setResult(session.id, result.textOutput);
+
+        agentEvents.emit('session:completed', {
+          sessionId: session.id,
+          iterations: session_data.iterations,
+          filesCreated: 0,
+          filesModified: 0,
+          fullOutputPath: result.fullOutputPath,
+        });
+
+        logger.info('Background task completed', {
+          event: 'background_completed',
+          sessionId: session.id,
+        });
+      }
+    })
+    .catch((err) => {
+      // Handle errors
+      sessionManager.setError(session.id, err.message);
+
+      agentEvents.emit('session:failed', {
+        sessionId: session.id,
+        error: err.message,
+        exitCode: err.exitCode,
+      });
+
+      logger.error('Background task failed', {
+        event: 'background_failed',
+        sessionId: session.id,
+        error: err.message,
+        exitCode: err.exitCode,
+      });
+    });
+}
+
+/**
  * Handle gemini_agent_task tool
  *
  * Delegates complete tasks to Gemini's agent mode with native file/shell access
@@ -705,7 +888,7 @@ async function runAgentProcess({
  */
 async function handleGeminiAgentTask(args, context) {
   // Trigger cleanup of old output files (runs in background, at most once per day)
-  cleanupOldOutputFiles().catch(() => {}); // Fire and forget
+  cleanupOldOutputFiles().catch(() => { }); // Fire and forget
 
   const {
     task_description,
@@ -714,9 +897,10 @@ async function handleGeminiAgentTask(args, context) {
     context_files = [],
     max_iterations = AGENT_LIMITS.DEFAULT_MAX_ITERATIONS,
     timeout_minutes = AGENT_LIMITS.DEFAULT_TIMEOUT_MINUTES,
-    stall_timeout_seconds = 120,
+    stall_timeout_seconds = 300,
     verbose = false,
     max_retries = 0,
+    background = false,
     model,
   } = args;
 
@@ -731,8 +915,8 @@ async function handleGeminiAgentTask(args, context) {
   if (!agentModeEnabled) {
     return error(
       'Agent mode is disabled for security.\n\n' +
-        'To enable, set GEMINI_AGENT_MODE=true in your .env file.\n\n' +
-        'WARNING: This allows Gemini to execute shell commands and modify files directly.'
+      'To enable, set GEMINI_AGENT_MODE=true in your .env file.\n\n' +
+      'WARNING: This allows Gemini to execute shell commands and modify files directly.'
     );
   }
 
@@ -748,7 +932,7 @@ async function handleGeminiAgentTask(args, context) {
     if (!session.geminiSessionId) {
       return error(
         'Session has no Gemini session ID - cannot resume.\n' +
-          'The previous session may not have started successfully.'
+        'The previous session may not have started successfully.'
       );
     }
     // Update session for resume
@@ -820,6 +1004,41 @@ async function handleGeminiAgentTask(args, context) {
   // Execute agent with automatic retry for transient failures
   sessionManager.setStatus(session.id, SessionStatus.RUNNING);
 
+  // BACKGROUND MODE: Start process and return immediately
+  if (background) {
+    // Start the agent process asynchronously
+    runAgentProcessBackground({
+      args: cliArgs,
+      prompt,
+      session,
+      sessionManager,
+      context,
+      workingDirectory: session.workingDirectory,
+      timeoutMs: session.timeoutMs,
+      stallTimeoutMs: stall_timeout_seconds * 1000,
+      verbose,
+    });
+
+    // Return immediately with session info for polling
+    return success(`## 🚀 Background Task Started
+
+**Session ID:** \`${session.id}\`
+**Status:** RUNNING
+**Task:** ${task_description.slice(0, 200)}${task_description.length > 200 ? '...' : ''}
+
+### Poll Status:
+\`\`\`json
+{ "status": "running" }  // via gemini_agent_list
+\`\`\`
+
+### When Complete:
+- Task returns PENDING_REVIEW if files changed
+- Use \`gemini_agent_approve\` to finalize
+
+### Check Progress:
+\`gemini_agent_list\` to see current status and iteration count.`);
+  }
+
   let lastError = null;
   let result = null;
 
@@ -875,20 +1094,58 @@ async function handleGeminiAgentTask(args, context) {
     }
   }
 
-  // Mark session as completed
+  // Check if any files were modified during the task
+  const session_data = sessionManager.getSession(session.id);
+  const filesChanged = session_data.filesCreated.length > 0 ||
+    session_data.filesModified.length > 0 ||
+    session_data.filesDeleted.length > 0;
+
+  // If files were changed, set to PENDING_REVIEW instead of COMPLETED
+  if (filesChanged) {
+    // Store the result but don't complete - require approval
+    session_data.result = result.textOutput;
+
+    // Set session to pending review
+    sessionManager.setPendingReview(session.id, {
+      filesCreated: [...session_data.filesCreated],
+      filesModified: [...session_data.filesModified],
+      filesDeleted: [...session_data.filesDeleted],
+      summary: result.textOutput?.slice(0, 2000) || 'Agent task completed',
+    });
+
+    // Emit session pending review event
+    agentEvents.emit('session:pending_review', {
+      sessionId: session.id,
+      iterations: session_data.iterations,
+      filesCreated: session_data.filesCreated.length,
+      filesModified: session_data.filesModified.length,
+      filesDeleted: session_data.filesDeleted.length,
+      fullOutputPath: result.fullOutputPath,
+    });
+
+    // Return PENDING_REVIEW response - requires approval
+    const summary_data = sessionManager.getSummary(session.id);
+    return success(formatPendingReviewResult(summary_data, {
+      fullOutputPath: result.fullOutputPath,
+      fullOutputSize: result.fullOutputSize,
+      truncated: result.truncated,
+    }, verbose));
+  }
+
+  // No files changed - auto-complete (no review needed for read-only tasks)
   sessionManager.setResult(session.id, result.textOutput);
 
   // Emit session completed event
   agentEvents.emit('session:completed', {
     sessionId: session.id,
-    iterations: session.iterations,
-    filesCreated: session.filesCreated.length,
-    filesModified: session.filesModified.length,
+    iterations: session_data.iterations,
+    filesCreated: 0,
+    filesModified: 0,
     fullOutputPath: result.fullOutputPath,
   });
 
-  const summary = sessionManager.getSummary(session.id);
-  const formattedResult = formatAgentResult(summary, {
+  const summary_final = sessionManager.getSummary(session.id);
+  const formattedResult = formatAgentResult(summary_final, {
     fullOutputPath: result.fullOutputPath,
     fullOutputSize: result.fullOutputSize,
     truncated: result.truncated,
@@ -959,10 +1216,144 @@ async function handleGeminiAgentClear(args) {
   }
 }
 
+/**
+ * Handle gemini_agent_approve tool - approve or reject agent changes
+ * 
+ * @param {Object} args Tool arguments
+ * @param {string} args.session_id Session to approve/reject
+ * @param {boolean} args.approved Whether to approve changes
+ * @param {Object[]} [args.fixes] Optional inline fixes to apply
+ * @param {string} [args.feedback] Feedback if rejected
+ * @returns {Promise<Object>} Tool response
+ */
+async function handleGeminiAgentApprove(args) {
+  const { session_id, approved, fixes = [], feedback } = args;
+
+  // Validate required arguments
+  const validationError = validateRequired(args, ['session_id']);
+  if (validationError) {
+    return error(validationError);
+  }
+
+  if (typeof approved !== 'boolean') {
+    return error('Missing required argument: approved (boolean)');
+  }
+
+  const sessionManager = getAgentSessionManager();
+  const session = sessionManager.getSession(session_id);
+
+  if (!session) {
+    return error(`Session not found: ${session_id}`);
+  }
+
+  if (session.status !== SessionStatus.PENDING_REVIEW) {
+    return error(
+      `Session is not pending review. Current status: ${session.status}\n` +
+      'Only sessions with PENDING_REVIEW status can be approved or rejected.'
+    );
+  }
+
+  // Apply inline fixes if provided
+  if (approved && fixes.length > 0) {
+    const { readFileSync, writeFileSync } = await import('fs');
+    const fixResults = [];
+
+    for (const fix of fixes) {
+      if (!fix.file || !fix.search || fix.replace === undefined) {
+        fixResults.push({ file: fix.file, success: false, error: 'Invalid fix format' });
+        continue;
+      }
+
+      try {
+        const content = readFileSync(fix.file, 'utf8');
+        if (!content.includes(fix.search)) {
+          fixResults.push({ file: fix.file, success: false, error: 'Search text not found' });
+          continue;
+        }
+
+        const newContent = content.replace(fix.search, fix.replace);
+        writeFileSync(fix.file, newContent, 'utf8');
+        fixResults.push({ file: fix.file, success: true });
+      } catch (err) {
+        fixResults.push({ file: fix.file, success: false, error: err.message });
+      }
+    }
+
+    // Log fix results
+    const failedFixes = fixResults.filter(r => !r.success);
+    if (failedFixes.length > 0) {
+      logger.warn('Some inline fixes failed', {
+        event: 'fix_partial_failure',
+        sessionId: session_id,
+        failed: failedFixes,
+      });
+    }
+  }
+
+  // Set approval status
+  const result = sessionManager.setApprovalStatus(session_id, approved, {
+    reviewedBy: 'claude-opus',
+    feedback: feedback || null,
+  });
+
+  if (!result) {
+    return error('Failed to set approval status');
+  }
+
+  // Emit appropriate event
+  if (approved) {
+    agentEvents.emit('session:approved', {
+      sessionId: session_id,
+      fixesApplied: fixes.length,
+    });
+
+    const summary = sessionManager.getSummary(session_id);
+    const lines = [
+      '## ✅ Changes Approved',
+      '',
+      `**Session:** \`${session_id}\``,
+      `**Files Created:** ${summary.files.created.length}`,
+      `**Files Modified:** ${summary.files.modified.length}`,
+    ];
+
+    if (fixes.length > 0) {
+      lines.push(`**Inline Fixes Applied:** ${fixes.length}`);
+    }
+
+    lines.push('');
+    lines.push('Changes have been finalized. Consider committing with `git commit`.');
+
+    return success(lines.join('\n'));
+  } else {
+    agentEvents.emit('session:rejected', {
+      sessionId: session_id,
+      feedback,
+    });
+
+    const lines = [
+      '## ❌ Changes Rejected',
+      '',
+      `**Session:** \`${session_id}\``,
+    ];
+
+    if (feedback) {
+      lines.push(`**Reason:** ${feedback}`);
+    }
+
+    lines.push('');
+    lines.push('The session has been marked as rejected.');
+    lines.push('You can run a new agent task with updated requirements,');
+    lines.push('or use `git checkout .` to revert file changes.');
+
+    return success(lines.join('\n'));
+  }
+}
+
 export const handlers = {
   gemini_agent_task: handleGeminiAgentTask,
   gemini_agent_list: handleGeminiAgentList,
   gemini_agent_clear: handleGeminiAgentClear,
+  gemini_agent_approve: handleGeminiAgentApprove,
 };
 
 export default handlers;

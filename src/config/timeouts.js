@@ -26,7 +26,11 @@ export const TIMEOUTS = {
   /** 5 seconds - time to wait before force killing a process after SIGTERM */
   FORCE_KILL: 5000,
   /** 60 seconds - OpenRouter API specific timeout */
-  OPENROUTER: 60000
+  OPENROUTER: 60000,
+  /** 10 seconds - Git diff operations */
+  GIT_DIFF: 10000,
+  /** 60 seconds - HTTP fetch operations */
+  FETCH: 60000
 };
 
 /**
@@ -39,7 +43,9 @@ export const TIMEOUTS = {
  */
 export const RATE_LIMITS = {
   cooldownMs: 60000,
-  maxFailures: 3
+  maxFailures: 3,
+  /** Time before auth failure is reset (5 minutes) */
+  authFailureTimeoutMs: 300000
 };
 
 /**
@@ -113,11 +119,15 @@ export const CLI_TIMEOUTS = {
 export const AGENT_LIMITS = {
   DEFAULT_MAX_ITERATIONS: 50,
   DEFAULT_TIMEOUT_MINUTES: 10,
-  STALL_TIMEOUT_MS: 120000,       // 2 minutes without activity
+  STALL_TIMEOUT_MS: 300000,       // 5 minutes without activity (increased for complex tasks)
   STALL_CHECK_INTERVAL_MS: 30000, // Check every 30 seconds
   MAX_AUTO_RETRIES: 2,
   SESSION_EXPIRATION_MS: 4 * 60 * 60 * 1000,  // 4 hours (reduced from 24h to limit memory usage)
   SESSION_CLEANUP_INTERVAL_MS: 60 * 60 * 1000, // 1 hour
+  /** 24 hours - How often to run output file cleanup */
+  OUTPUT_CLEANUP_INTERVAL_MS: 24 * 60 * 60 * 1000,
+  /** 30 days - Maximum age for output files before deletion */
+  OUTPUT_MAX_AGE_MS: 30 * 24 * 60 * 60 * 1000,
 };
 
 /**
@@ -153,7 +163,11 @@ export const OUTPUT_LIMITS = {
   /** Maximum characters to accumulate in agent text output buffer */
   AGENT_OUTPUT_MAX: 100000,   // ~25K tokens - cap agent output accumulation
   /** Characters to keep from head/tail when truncating agent output */
-  AGENT_OUTPUT_HEAD_TAIL: 20000
+  AGENT_OUTPUT_HEAD_TAIL: 20000,
+  /** Maximum characters to store per tool call field */
+  TOOL_CALL_MAX_SIZE: 2000,
+  /** Maximum characters for verbose output mode */
+  VERBOSE_OUTPUT_MAX: 100000
 };
 
 /**
@@ -184,7 +198,7 @@ export function formatTimeout(ms) {
     const minutes = Math.round((ms / 60000) * 10) / 10;
     return `${minutes}m`;
   }
-  
+
   if (ms >= 1000) {
     const seconds = Math.round((ms / 1000) * 10) / 10;
     return `${seconds}s`;
