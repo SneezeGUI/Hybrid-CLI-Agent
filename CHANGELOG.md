@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-01-12
+
+### Added
+- Comprehensive input validation for `gemini_agent_task` using centralized validation utilities
+- All handler exports now wrapped with `withErrorHandling` for consistent error responses
+
+### Changed
+- Replaced inline `rateLimitTracker` object with centralized `RateLimitTracker` class from `utils/retry.js`
+- Replaced manual retry loop in agent handler with `withRetry` utility
+- Method calls updated: `recordFailure` → `recordRateLimit` for consistency with centralized class API
+
+### Fixed
+- Input validation now properly enforces limits on `max_iterations` (1-100), `max_retries` (0-10), `timeout_minutes` (1-60), `stall_timeout_seconds` (30-600)
+- Context file patterns limited to 50 max for memory protection
+
+### Technical
+- Integrated 6 previously unused validation functions: `validatePrompt`, `validateModel`, `validateFilePatterns`, `validatePositiveInteger`, `aggregateValidations`
+- Integrated `withRetry` and `getRateLimitTracker` from `utils/retry.js`
+- Integrated `withErrorHandling` from `tool-handlers/base.js` into all handler exports
+- Resolves TODO.md issue #9 (Missing Input Validation)
+
 ## [0.3.6] - 2026-01-10
 
 ### Added

@@ -9,14 +9,21 @@ import { createWriteStream, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { EventEmitter } from 'events';
-import { success, error, validateRequired, processLargeOutput } from '../base.js';
+import { success, error, validateRequired, processLargeOutput, withErrorHandling } from '../base.js';
+import {
+  validatePrompt,
+  validateModel,
+  validateFilePatterns,
+  validatePositiveInteger,
+  aggregateValidations,
+} from '../../../utils/validation.js';
 import {
   getAgentSessionManager,
   SessionStatus,
 } from '../../../services/agent-session-manager.js';
 import { OUTPUT_LIMITS, AGENT_LIMITS } from '../../../config/timeouts.js';
 import { getLogger } from '../../../utils/logger.js';
-import { sleep, calculateBackoffDelay } from '../../../utils/retry.js';
+import { sleep, calculateBackoffDelay, withRetry } from '../../../utils/retry.js';
 
 // Create child logger for agent module
 const logger = getLogger().child('Agent');
@@ -904,10 +911,24 @@ async function handleGeminiAgentTask(args, context) {
     model,
   } = args;
 
-  // Validate required arguments
-  const validationError = validateRequired(args, ['task_description']);
-  if (validationError) {
-    return error(validationError);
+  // Comprehensive input validation
+  const validations = {
+    task_description: validatePrompt(task_description),
+    model: validateModel(model),
+    max_iterations: validatePositiveInteger(max_iterations, 'max_iterations', 1, 100),
+    max_retries: validatePositiveInteger(max_retries, 'max_retries', 0, 10),
+    timeout_minutes: validatePositiveInteger(timeout_minutes, 'timeout_minutes', 1, 60),
+    stall_timeout_seconds: validatePositiveInteger(stall_timeout_seconds, 'stall_timeout_seconds', 30, 600),
+  };
+
+  // Validate context_files if provided
+  if (context_files && context_files.length > 0) {
+    validations.context_files = validateFilePatterns(context_files, 50);
+  }
+
+  const validation = aggregateValidations(validations);
+  if (!validation.valid) {
+    return error(`Validation failed:\n- ${validation.errors.join('\n- ')}`);
   }
 
   // Check if agent mode is enabled
@@ -1039,13 +1060,12 @@ async function handleGeminiAgentTask(args, context) {
 \`gemini_agent_list\` to see current status and iteration count.`);
   }
 
-  let lastError = null;
   let result = null;
 
-  // Retry loop for transient failures
-  while (true) {
-    try {
-      result = await runAgentProcess({
+  // Execute agent with retry using centralized withRetry utility
+  try {
+    result = await withRetry(
+      () => runAgentProcess({
         args: cliArgs,
         prompt,
         session,
@@ -1054,44 +1074,42 @@ async function handleGeminiAgentTask(args, context) {
         workingDirectory: session.workingDirectory,
         timeoutMs: session.timeoutMs,
         stallTimeoutMs: stall_timeout_seconds * 1000,
-      });
-      break; // Success - exit retry loop
-    } catch (err) {
-      lastError = err;
-
-      // Check if error is retryable and session allows more retries
-      if (err.isRetryable && sessionManager.canAutoRetry(session.id)) {
-        const retryCount = sessionManager.incrementRetry(session.id);
-        const delay = calculateBackoffDelay(retryCount - 1, 5000, 60000, true);
-
-        logger.warn('Agent failed with retryable error, auto-retrying', {
-          event: 'auto_retry',
-          sessionId: session.id,
-          attempt: retryCount,
-          maxRetries: session.maxAutoRetries,
-          exitCode: err.exitCode,
-          delayMs: delay,
-        });
-
-        await sleep(delay);
-        sessionManager.setStatus(session.id, SessionStatus.RUNNING);
-        continue; // Retry
+      }),
+      {
+        maxRetries: max_retries,
+        baseDelayMs: 5000,
+        maxDelayMs: 60000,
+        addJitter: true,
+        shouldRetry: (err) => err.isRetryable && sessionManager.canAutoRetry(session.id),
+        onRetry: async ({ attempt, delayMs, error: err }) => {
+          sessionManager.incrementRetry(session.id);
+          logger.warn('Agent failed with retryable error, auto-retrying', {
+            event: 'auto_retry',
+            sessionId: session.id,
+            attempt,
+            maxRetries: max_retries,
+            exitCode: err.exitCode,
+            delayMs,
+          });
+          // Set status back to RUNNING after the delay (withRetry handles the sleep)
+          sessionManager.setStatus(session.id, SessionStatus.RUNNING);
+        },
       }
+    );
+  } catch (err) {
+    // Not retryable or max retries reached - fail
+    sessionManager.setError(session.id, err.message);
 
-      // Not retryable or max retries reached - fail
-      sessionManager.setError(session.id, err.message);
+    // Emit session failed event
+    agentEvents.emit('session:failed', {
+      sessionId: session.id,
+      error: err.message,
+      exitCode: err.exitCode,
+      iterations: session.iterations,
+    });
 
-      // Emit session failed event
-      agentEvents.emit('session:failed', {
-        sessionId: session.id,
-        error: err.message,
-        exitCode: err.exitCode,
-        iterations: session.iterations,
-      });
-
-      const summary = sessionManager.getSummary(session.id);
-      return error(formatAgentError(summary, err));
-    }
+    const summary = sessionManager.getSummary(session.id);
+    return error(formatAgentError(summary, err));
   }
 
   // Check if any files were modified during the task
@@ -1350,10 +1368,10 @@ async function handleGeminiAgentApprove(args) {
 }
 
 export const handlers = {
-  gemini_agent_task: handleGeminiAgentTask,
-  gemini_agent_list: handleGeminiAgentList,
-  gemini_agent_clear: handleGeminiAgentClear,
-  gemini_agent_approve: handleGeminiAgentApprove,
+  gemini_agent_task: withErrorHandling(handleGeminiAgentTask, 'gemini_agent_task'),
+  gemini_agent_list: withErrorHandling(handleGeminiAgentList, 'gemini_agent_list'),
+  gemini_agent_clear: withErrorHandling(handleGeminiAgentClear, 'gemini_agent_clear'),
+  gemini_agent_approve: withErrorHandling(handleGeminiAgentApprove, 'gemini_agent_approve'),
 };
 
 export default handlers;

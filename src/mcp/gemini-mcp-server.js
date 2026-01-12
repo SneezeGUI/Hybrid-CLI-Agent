@@ -40,6 +40,7 @@ import { getResponseCache } from '../services/response-cache.js';
 import { applyEnvFile } from '../utils/env.js';
 import { getContextFileCache } from '../utils/file-cache.js';
 import { analyzeStderr, createTypedError, readFilesFromPatterns } from './tool-handlers/base.js';
+import { getRateLimitTracker } from '../utils/retry.js';
 import { executeToolHandler } from './tool-handlers/index.js';
 
 // Get project root from script location (works for system-wide MCP use)
@@ -262,43 +263,13 @@ const TASK_TYPES = {
 
 /**
  * Rate limit tracking per model
- * Uses RATE_LIMITS from centralized config (src/config/timeouts.js)
+ * Uses centralized RateLimitTracker from utils/retry.js
+ * Configured with RATE_LIMITS from src/config/timeouts.js
  */
-const rateLimitTracker = {
-  failures: {},      // { model: { count, lastFailure } }
+const rateLimitTracker = getRateLimitTracker({
   cooldownMs: RATE_LIMITS.cooldownMs,
   maxFailures: RATE_LIMITS.maxFailures,
-
-  recordFailure(model) {
-    if (!this.failures[model]) {
-      this.failures[model] = { count: 0, lastFailure: 0 };
-    }
-    this.failures[model].count++;
-    this.failures[model].lastFailure = Date.now();
-  },
-
-  recordSuccess(model) {
-    if (this.failures[model]) {
-      this.failures[model].count = Math.max(0, this.failures[model].count - 1);
-    }
-  },
-
-  isAvailable(model) {
-    const tracker = this.failures[model];
-    if (!tracker || tracker.count < this.maxFailures) return true;
-
-    // Check if cooldown has passed
-    if (Date.now() - tracker.lastFailure > this.cooldownMs) {
-      tracker.count = 0;  // Reset after cooldown
-      return true;
-    }
-    return false;
-  },
-
-  reset(model) {
-    delete this.failures[model];
-  },
-};
+});
 
 // ============================================================================ 
 // Token Usage Tracking (for cost estimation and metrics)
@@ -650,7 +621,7 @@ async function runGeminiCli(prompt, options = {}) {
         setTimeout(() => {
           if (!proc.killed) proc.kill('SIGKILL');
         }, 5000);
-        rateLimitTracker.recordFailure(selectedModel);
+        rateLimitTracker.recordRateLimit(selectedModel);
         reject(new Error(`Gemini CLI timed out after ${timeout / 1000}s`));
       }, timeout);
 
@@ -703,7 +674,7 @@ async function runGeminiCli(prompt, options = {}) {
             if (analysis.isModelError) {
               console.error(`[gemini-worker] Model error for ${selectedModel}, will try fallback`);
             }
-            rateLimitTracker.recordFailure(selectedModel);
+            rateLimitTracker.recordRateLimit(selectedModel);
             reject({
               isRateLimit: analysis.isRateLimit,
               isModelError: analysis.isModelError,

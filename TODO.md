@@ -1,6 +1,6 @@
 # Hybrid CLI Agent - TODO & Progress Tracker
 
-## Project Status: v0.3.6 - Beta
+## Project Status: v0.3.9 - Beta
 
 **Last Updated:** January 2026
 **Lines of Code:** ~9,500
@@ -247,9 +247,9 @@ I've completed a comprehensive analysis of the hybrid-cli-agent codebase. Here a
 🟡 MEDIUM PRIORITY ISSUES
 8. [RESOLVED] Inconsistent File Structure
    - Fix: Moved adapters.test.js to tests/, updated package.json main entry
-9. Missing Input Validation (Throughout)
-   - Locations: Most MCP tool handlers
-   - Issue: No validation on prompt lengths, model names, or parameter types
+9. [RESOLVED] Missing Input Validation (v0.3.9)
+   - Fix: Integrated validation.js functions into gemini_agent_task handler
+   - Validates: prompt length, model names, max_iterations, max_retries, timeout_minutes, context_files
 10. Weak Error Messages (gemini-mcp-server.js:113-118)
     - Issue: Generic error messages don't help users troubleshoot
 11. Race Conditions (index.js:233-325, gemini-cli.js:221-319)

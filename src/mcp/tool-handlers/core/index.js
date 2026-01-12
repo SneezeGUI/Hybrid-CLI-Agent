@@ -4,7 +4,7 @@
  * Handlers: gemini_auth_status
  */
 
-import { success } from '../base.js';
+import { success, withErrorHandling } from '../base.js';
 
 /**
  * Check Gemini authentication status
@@ -78,10 +78,10 @@ ${status.tips.length > 0 ? '\nTips:\n' + status.tips.map(t => '- ' + t).join('\n
 }
 
 /**
- * Export handlers map
+ * Export handlers map with error handling wrappers
  */
 export const handlers = {
-  gemini_auth_status: handleGeminiAuthStatus,
+  gemini_auth_status: withErrorHandling(handleGeminiAuthStatus, 'gemini_auth_status'),
 };
 
 export default handlers;

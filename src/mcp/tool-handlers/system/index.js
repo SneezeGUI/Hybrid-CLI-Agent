@@ -4,7 +4,7 @@
  * Handlers: hybrid_metrics, gemini_config_show, gemini_health_check
  */
 
-import { success } from '../base.js';
+import { success, withErrorHandling } from '../base.js';
 import { TIMEOUTS } from '../../../config/timeouts.js';
 
 /**
@@ -63,7 +63,7 @@ async function handleGeminiConfigShow(args, context) {
   }).join('\n');
 
   const config = {
-    version: '0.3.8',
+    version: '0.3.9',
     auth: {
       method: AUTH_CONFIG.method,
       geminiApiKey: maskValue(process.env.GEMINI_API_KEY),
@@ -281,12 +281,12 @@ ${healthResult.timestamp}`;
 }
 
 /**
- * Export handlers map
+ * Export handlers map with error handling wrappers
  */
 export const handlers = {
-  hybrid_metrics: handleHybridMetrics,
-  gemini_config_show: handleGeminiConfigShow,
-  gemini_health_check: handleGeminiHealthCheck,
+  hybrid_metrics: withErrorHandling(handleHybridMetrics, 'hybrid_metrics'),
+  gemini_config_show: withErrorHandling(handleGeminiConfigShow, 'gemini_config_show'),
+  gemini_health_check: withErrorHandling(handleGeminiHealthCheck, 'gemini_health_check'),
 };
 
 export default handlers;
