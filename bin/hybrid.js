@@ -18,11 +18,54 @@ import ora from 'ora';
 import { Orchestrator } from '../src/orchestrator/index.js';
 import { ClaudeCodeAdapter } from '../src/adapters/claude-code.js';
 import { GeminiCliAdapter } from '../src/adapters/gemini-cli.js';
+import { 
+  HybridError, 
+  ValidationError, 
+  AuthenticationError, 
+  TimeoutError, 
+  RateLimitError, 
+  ConfigError 
+} from '../src/utils/errors.js';
+import { CLI_TIMEOUTS, AUTH_DEFAULTS } from '../src/config/index.js';
 
 const program = new Command();
 
 // Global verbose flag
 let verbose = false;
+
+/**
+ * Handle errors centrally with consistent formatting
+ * @param {Error} error 
+ * @param {ora.Ora} [spinner] 
+ */
+function handleError(error, spinner) {
+  if (spinner) spinner.stop();
+  
+  const message = error.message || 'Unknown error';
+  
+  if (error instanceof ValidationError) {
+    console.error(chalk.red('✖ Invalid Input: ') + message);
+    if (error.field) console.error(chalk.dim(`  Field: ${error.field}`));
+  } else if (error instanceof AuthenticationError) {
+    console.error(chalk.red('✖ Authentication Failed: ') + message);
+    console.error(chalk.yellow('  Tip: Try running "gemini auth login"'));
+  } else if (error instanceof TimeoutError) {
+    console.error(chalk.red('✖ Timeout: ') + message);
+  } else if (error instanceof RateLimitError) {
+    console.error(chalk.yellow('⚠ Rate Limit Exceeded: ') + message);
+  } else if (error instanceof ConfigError) {
+    console.error(chalk.red('✖ Configuration Error: ') + message);
+  } else {
+    // Generic or unexpected error
+    console.error(chalk.red('✖ Error: ') + message);
+  }
+
+  if (verbose && error.stack) {
+    console.error(chalk.dim(error.stack));
+  }
+  
+  process.exit(1);
+}
 
 /**
  * Connect orchestrator progress events to an ora spinner
@@ -88,6 +131,27 @@ function printSummary(result) {
   console.log(`  Cost: $${cost?.toFixed(4) || '0.0000'}`);
 }
 
+/**
+ * Wrap a promise with a timeout
+ * @param {Promise} promise 
+ * @param {number} ms 
+ * @param {string} opName 
+ */
+async function withTimeout(promise, ms, opName) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new TimeoutError(`Operation timed out after ${ms}ms`, opName, ms));
+    }, ms);
+  });
+  
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 program
   .name('hybrid')
   .description('Multi-agent CLI orchestrator combining Claude Code and Gemini CLI')
@@ -102,15 +166,25 @@ async function checkAdapters() {
   const claude = new ClaudeCodeAdapter();
   const gemini = new GeminiCliAdapter();
   
-  const claudeAvailable = await claude.isAvailable();
-  const geminiAvailable = await gemini.isAvailable();
+  // Use config timeouts for checks
+  const claudeAvailable = await withTimeout(
+    claude.isAvailable(), 
+    CLI_TIMEOUTS.AUTH_TEST, 
+    'Claude availability check'
+  ).catch(() => false);
+
+  const geminiAvailable = await withTimeout(
+    gemini.isAvailable(), 
+    CLI_TIMEOUTS.AUTH_TEST, 
+    'Gemini availability check'
+  ).catch(() => false);
   
   return { claude: claudeAvailable, gemini: geminiAvailable };
 }
 
-// ============================================================================
+// ============================================================================ 
 // Commands
-// ============================================================================
+// ============================================================================ 
 
 program
   .command('status')
@@ -118,45 +192,58 @@ program
   .action(async () => {
     const spinner = ora('Checking available agents...').start();
     
-    const { claude, gemini } = await checkAdapters();
-    spinner.stop();
-    
-    console.log('\n' + chalk.bold('Agent Status:'));
-    console.log(`  ${claude ? chalk.green('✓') : chalk.red('✗')} Claude Code CLI ${claude ? chalk.gray('(claude)') : chalk.red('not found - npm i -g @anthropic-ai/claude-code')}`);
-    console.log(`  ${gemini ? chalk.green('✓') : chalk.red('✗')} Gemini CLI ${gemini ? chalk.gray('(gemini)') : chalk.red('not found - npm i -g @google/gemini-cli')}`);
-    
-    // Check Gemini auth status if available
-    if (gemini) {
-      const geminiAdapter = new GeminiCliAdapter();
-      const authStatus = await geminiAdapter.checkAuth();
-      const authInfo = geminiAdapter.getAuthInfo();
+    try {
+      const { claude, gemini } = await checkAdapters();
+      spinner.stop();
       
-      console.log('\n' + chalk.bold('Gemini Authentication:'));
-      console.log(`  Method: ${chalk.cyan(authInfo.method)}`);
-      console.log(`  Status: ${authStatus.authenticated ? chalk.green('Authenticated') : chalk.red('Not authenticated')}`);
-      console.log(`  Free Tier: ${authInfo.isFree ? chalk.green('Yes (60 RPM, 1000 RPD)') : chalk.yellow('No (billed per token)')}`);
-      console.log(`  Models: ${authInfo.models.join(', ')}`);
+      console.log('\n' + chalk.bold('Agent Status:'));
+      console.log(`  ${claude ? chalk.green('✓') : chalk.red('✗')} Claude Code CLI ${claude ? chalk.gray('(claude)') : chalk.red('not found - npm i -g @anthropic-ai/claude-code')}`);
+      console.log(`  ${gemini ? chalk.green('✓') : chalk.red('✗')} Gemini CLI ${gemini ? chalk.gray('(gemini)') : chalk.red('not found - npm i -g @google/gemini-cli')}`);
       
-      if (!authStatus.authenticated) {
-        console.log('\n' + chalk.yellow('To authenticate with Google Pro subscription:'));
-        console.log(chalk.gray('  gemini auth login'));
+      // Check Gemini auth status if available
+      if (gemini) {
+        const geminiAdapter = new GeminiCliAdapter();
+        const authStatus = await withTimeout(
+          geminiAdapter.checkAuth(),
+          CLI_TIMEOUTS.AUTH_TEST,
+          'Gemini auth check'
+        );
+        const authInfo = geminiAdapter.getAuthInfo();
+        
+        console.log('\n' + chalk.bold('Gemini Authentication:'));
+        console.log(`  Method: ${chalk.cyan(authInfo.method)}`);
+        console.log(`  Status: ${authStatus.authenticated ? chalk.green('Authenticated') : chalk.red('Not authenticated')}`);
+        console.log(`  Free Tier: ${authInfo.isFree ? chalk.green('Yes (60 RPM, 1000 RPD)') : chalk.yellow('No (billed per token)')}`);
+        console.log(`  Models: ${authInfo.models.join(', ')}`);
+        
+        if (!authStatus.authenticated) {
+          console.log('\n' + chalk.yellow('To authenticate with Google Pro subscription:'));
+          console.log(chalk.gray('  gemini auth login'));
+        }
+        
+        if (authStatus.isProSubscription) {
+          console.log('\n' + chalk.green('✓ Pro subscription detected - you have generous "FREE" limits!'));
+        }
       }
       
-      if (authStatus.isProSubscription) {
-        console.log('\n' + chalk.green('✓ Pro subscription detected - you have generous "FREE" limits!'));
+      // Check for API keys
+      console.log('\n' + chalk.bold('Environment Variables:'));
+      console.log(`  GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? chalk.green('Set') : chalk.gray('Not set')}`);
+      console.log(`  VERTEX_API_KEY: ${process.env.VERTEX_API_KEY ? chalk.green('Set (Gemini 3 Pro available)') : chalk.gray('Not set')}`);
+      console.log(`  GOOGLE_API_KEY: ${process.env.GOOGLE_API_KEY ? chalk.green('Set') : chalk.gray('Not set')}`);
+
+      // Show config defaults
+      console.log('\n' + chalk.bold('Configuration Defaults:'));
+      console.log(`  Primary Auth Method: ${chalk.dim(AUTH_DEFAULTS.primaryMethod)}`);
+      console.log(`  Vertex Region: ${chalk.dim(AUTH_DEFAULTS.vertexLocation)}`);
+      
+      if (claude && gemini) {
+        console.log('\n' + chalk.green('✓ All agents ready!'));
+      } else {
+        console.log('\n' + chalk.yellow('⚠ Some agents are missing. Install them to use all features.'));
       }
-    }
-    
-    // Check for API keys
-    console.log('\n' + chalk.bold('Environment Variables:'));
-    console.log(`  GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? chalk.green('Set') : chalk.gray('Not set')}`);
-    console.log(`  VERTEX_API_KEY: ${process.env.VERTEX_API_KEY ? chalk.green('Set (Gemini 3 Pro available)') : chalk.gray('Not set')}`);
-    console.log(`  GOOGLE_API_KEY: ${process.env.GOOGLE_API_KEY ? chalk.green('Set') : chalk.gray('Not set')}`);
-    
-    if (claude && gemini) {
-      console.log('\n' + chalk.green('✓ All agents ready!'));
-    } else {
-      console.log('\n' + chalk.yellow('⚠ Some agents are missing. Install them to use all features.'));
+    } catch (error) {
+      handleError(error, spinner);
     }
   });
 
@@ -170,6 +257,10 @@ program
     const spinner = ora('Thinking...').start();
 
     try {
+      if (!question || typeof question !== 'string' || !question.trim()) {
+        throw new ValidationError('Question cannot be empty', 'question');
+      }
+
       const orchestrator = new Orchestrator({ workDir: process.cwd() });
       connectProgress(orchestrator, spinner);
 
@@ -194,8 +285,7 @@ program
       }
 
     } catch (error) {
-      spinner.fail(chalk.red(error.message));
-      process.exit(1);
+      handleError(error, spinner);
     }
   });
 
@@ -208,6 +298,10 @@ program
     const spinner = ora('Gemini is reading files...').start();
 
     try {
+      if (!query || typeof query !== 'string' || !query.trim()) {
+        throw new ValidationError('Query cannot be empty', 'query');
+      }
+
       const orchestrator = new Orchestrator({ workDir: process.cwd() });
       connectProgress(orchestrator, spinner);
 
@@ -231,8 +325,7 @@ Read all matching files and provide a comprehensive analysis.`;
       }
 
     } catch (error) {
-      spinner.fail(chalk.red(error.message));
-      process.exit(1);
+      handleError(error, spinner);
     }
   });
 
@@ -245,6 +338,9 @@ program
     const spinner = ora('Gemini is drafting code...').start();
 
     try {
+      if (!file) throw new ValidationError('Target file is required', 'file');
+      if (!description) throw new ValidationError('Description is required', 'description');
+
       const orchestrator = new Orchestrator({ workDir: process.cwd() });
       connectProgress(orchestrator, spinner);
 
@@ -266,8 +362,7 @@ Create production-quality code for this file.`;
       printSummary(result);
 
     } catch (error) {
-      spinner.fail(chalk.red(error.message));
-      process.exit(1);
+      handleError(error, spinner);
     }
   });
 
@@ -299,8 +394,7 @@ Review the code and identify issues.`;
       printSummary(result);
 
     } catch (error) {
-      spinner.fail(chalk.red(error.message));
-      process.exit(1);
+      handleError(error, spinner);
     }
   });
 
@@ -308,14 +402,18 @@ program
   .command('costs')
   .description('Show cost summary for this session')
   .action(async () => {
-    const orchestrator = new Orchestrator({ workDir: process.cwd() });
-    const costs = orchestrator.getTotalCosts();
-    
-    console.log('\n' + chalk.bold('Cost Summary:'));
-    console.log(`  Claude: $${costs.claude.cost.toFixed(4)} (${costs.claude.inputTokens} in / ${costs.claude.outputTokens} out)`);
-    console.log(`  Gemini: $${costs.gemini.cost.toFixed(4)} (${costs.gemini.inputTokens} in / ${costs.gemini.outputTokens} out)`);
-    console.log(chalk.dim('  (Gemini CLI with Google account is FREE)'));
-    console.log(`  ${chalk.bold('Total:')} $${costs.total.toFixed(4)}`);
+    try {
+      const orchestrator = new Orchestrator({ workDir: process.cwd() });
+      const costs = orchestrator.getTotalCosts();
+      
+      console.log('\n' + chalk.bold('Cost Summary:'));
+      console.log(`  Claude: $${costs.claude.cost.toFixed(4)} (${costs.claude.inputTokens} in / ${costs.claude.outputTokens} out)`);
+      console.log(`  Gemini: $${costs.gemini.cost.toFixed(4)} (${costs.gemini.inputTokens} in / ${costs.gemini.outputTokens} out)`);
+      console.log(chalk.dim('  (Gemini CLI with Google account is FREE)'));
+      console.log(`  ${chalk.bold('Total:')} $${costs.total.toFixed(4)}`);
+    } catch (error) {
+      handleError(error);
+    }
   });
 
 program
@@ -326,19 +424,20 @@ program
     const { fileURLToPath } = await import('url');
     const { dirname, join } = await import('path');
     
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    const serverPath = join(__dirname, '..', 'src', 'mcp', 'gemini-mcp-server.js');
-    
-    console.log(chalk.bold('Installing Gemini Worker MCP server...'));
-    console.log(chalk.dim(`Server path: ${serverPath}`));
-    
     try {
+      const __dirname = dirname(fileURLToPath(import.meta.url));
+      const serverPath = join(__dirname, '..', 'src', 'mcp', 'gemini-mcp-server.js');
+      
+      console.log(chalk.bold('Installing Gemini Worker MCP server...'));
+      console.log(chalk.dim(`Server path: ${serverPath}`));
+      
       execSync(`claude mcp add gemini-worker -- node ${serverPath}`, { stdio: 'inherit' });
       console.log(chalk.green('\n✓ MCP server installed!'));
       console.log(chalk.dim('Claude Code can now use Gemini tools like research_heavy_context'));
     } catch (error) {
+      // Don't use handleError here as we want to provide specific manual instructions
       console.log(chalk.yellow('\nManual installation:'));
-      console.log(`  claude mcp add gemini-worker -- node ${serverPath}`);
+      console.log(`  claude mcp add gemini-worker -- node ${join('..', 'src', 'mcp', 'gemini-mcp-server.js')}`);
     }
   });
 
