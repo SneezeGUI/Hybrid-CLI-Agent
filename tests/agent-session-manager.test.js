@@ -70,7 +70,6 @@ describe('AgentSessionManager', () => {
         taskDescription: 'Test task',
       });
 
-      assert.strictEqual(session.maxIterations, AGENT_LIMITS.DEFAULT_MAX_ITERATIONS);
       assert.strictEqual(session.timeoutMs, AGENT_LIMITS.DEFAULT_TIMEOUT_MINUTES * 60 * 1000);
       assert.strictEqual(session.iterations, 0);
       assert.deepStrictEqual(session.toolCalls, []);
@@ -84,14 +83,12 @@ describe('AgentSessionManager', () => {
         taskDescription: 'Custom task',
         workingDirectory: '/test/dir',
         model: 'gemini-2.5-pro',
-        maxIterations: 50,
         timeoutMinutes: 30,
       });
 
       assert.strictEqual(session.taskDescription, 'Custom task');
       assert.strictEqual(session.workingDirectory, '/test/dir');
       assert.strictEqual(session.model, 'gemini-2.5-pro');
-      assert.strictEqual(session.maxIterations, 50);
       assert.strictEqual(session.timeoutMs, 30 * 60 * 1000);
     });
 
@@ -258,19 +255,21 @@ describe('AgentSessionManager', () => {
       assert.strictEqual(result.reason, undefined);
     });
 
-    it('should detect iteration limit exceeded', () => {
+    it('should not have iteration limit (removed - timeout/stall handles safety)', () => {
       const session = manager.createSession({
         taskDescription: 'Test',
-        maxIterations: 2,
       });
 
-      manager.recordToolCall(session.id, { tool: 'test', input: {} });
-      manager.recordToolCall(session.id, { tool: 'test', input: {} });
+      // Record many tool calls - should NOT trigger limit exceeded
+      for (let i = 0; i < 100; i++) {
+        manager.recordToolCall(session.id, { tool: 'test', input: {} });
+      }
 
       const result = manager.checkLimits(session.id);
 
-      assert.strictEqual(result.exceeded, true);
-      assert.ok(result.reason.includes('Maximum iterations'));
+      // Should not exceed limits - only timeout can trigger exceeded now
+      assert.strictEqual(result.exceeded, false);
+      assert.strictEqual(session.iterations, 100); // Iterations still counted for metrics
     });
 
     it('should return exceeded for non-existent session', () => {

@@ -106,9 +106,11 @@ export const CLI_TIMEOUTS = {
  * Agent mode limits and defaults.
  * Centralized to ensure consistency between handler defaults and session manager.
  *
+ * Note: Iteration limit was removed - timeout and stall detection handle safety.
+ * Gemini is FREE, so there's no cost reason to limit iterations.
+ *
  * @constant
  * @type {Object}
- * @property {number} DEFAULT_MAX_ITERATIONS - Maximum tool calls before stopping (safety limit)
  * @property {number} DEFAULT_TIMEOUT_MINUTES - Timeout in minutes for agent execution
  * @property {number} STALL_TIMEOUT_MS - Time without activity before considering agent stalled
  * @property {number} STALL_CHECK_INTERVAL_MS - How often to check for stalls
@@ -117,7 +119,6 @@ export const CLI_TIMEOUTS = {
  * @property {number} SESSION_CLEANUP_INTERVAL_MS - How often to cleanup expired sessions (1 hour)
  */
 export const AGENT_LIMITS = {
-  DEFAULT_MAX_ITERATIONS: 50,
   DEFAULT_TIMEOUT_MINUTES: 10,
   STALL_TIMEOUT_MS: 300000,       // 5 minutes without activity (increased for complex tasks)
   STALL_CHECK_INTERVAL_MS: 30000, // Check every 30 seconds

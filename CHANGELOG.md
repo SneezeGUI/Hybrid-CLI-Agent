@@ -16,14 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced manual retry loop in agent handler with `withRetry` utility
 - Method calls updated: `recordFailure` → `recordRateLimit` for consistency with centralized class API
 
+### Removed
+- **`max_iterations` parameter removed from `gemini_agent_task`** - The iteration limit was redundant with existing safety mechanisms (timeout, stall detection, background mode, session monitoring). Gemini is FREE, so there's no cost reason to limit iterations. Tasks no longer fail with "Agent failed after X iterations" errors.
+
 ### Fixed
-- Input validation now properly enforces limits on `max_iterations` (1-100), `max_retries` (0-10), `timeout_minutes` (1-60), `stall_timeout_seconds` (30-600)
+- Input validation now properly enforces limits on `max_retries` (0-10), `timeout_minutes` (1-60), `stall_timeout_seconds` (30-600)
 - Context file patterns limited to 50 max for memory protection
 
 ### Technical
 - Integrated 6 previously unused validation functions: `validatePrompt`, `validateModel`, `validateFilePatterns`, `validatePositiveInteger`, `aggregateValidations`
 - Integrated `withRetry` and `getRateLimitTracker` from `utils/retry.js`
 - Integrated `withErrorHandling` from `tool-handlers/base.js` into all handler exports
+- Removed `DEFAULT_MAX_ITERATIONS` from `config/timeouts.js`
+- Updated `agent-session-manager.js` to remove iteration limit checking (timeout-only safety)
 - Resolves TODO.md issue #9 (Missing Input Validation)
 
 ## [0.3.6] - 2026-01-10

@@ -34,7 +34,7 @@ const logger = getLogger().child('Agent');
  * Events:
  * - 'session:started' - { sessionId, taskDescription }
  * - 'session:status' - { sessionId, status }
- * - 'session:progress' - { sessionId, iterations, maxIterations, lastTool }
+ * - 'session:progress' - { sessionId, iterations, lastTool }
  * - 'session:tool_call' - { sessionId, tool, input }
  * - 'session:text' - { sessionId, text }
  * - 'session:completed' - { sessionId, result }
@@ -164,7 +164,7 @@ function formatAgentResult(summary, outputInfo = {}, verbose = false) {
     '',
     `**Session ID:** \`${summary.id}\``,
     `**Duration:** ${summary.durationFormatted}`,
-    `**Iterations:** ${summary.iterations}/${summary.maxIterations}`,
+    `**Iterations:** ${summary.iterations}`,
   ];
 
   // Add full output file info if available
@@ -363,7 +363,7 @@ function formatPendingReviewResult(summary, outputInfo = {}, verbose = false) {
     '',
     `**Session ID:** \`${summary.id}\``,
     `**Duration:** ${summary.durationFormatted}`,
-    `**Iterations:** ${summary.iterations}/${summary.maxIterations}`,
+    `**Iterations:** ${summary.iterations}`,
   ];
 
   if (fullOutputPath) {
@@ -617,16 +617,17 @@ async function runAgentProcess({
               return;
             }
 
-            // Record the tool call
+            // Record the tool call (Gemini CLI uses 'parameters')
             const toolName = event.tool_name || event.name;
             sessionManager.recordToolCall(session.id, {
               tool: toolName,
-              input: event.tool_input || event.input,
+              input: event.parameters || event.tool_input || event.input,
               code: event.tool_code,
             });
 
             // Detect file mutations for PENDING_REVIEW workflow
-            const toolInput = event.tool_input || event.input || {};
+            // Note: Gemini CLI uses 'parameters', other formats may use 'tool_input' or 'input'
+            const toolInput = event.parameters || event.tool_input || event.input || {};
             const filePath = toolInput.path || toolInput.file_path || toolInput.filename || toolInput.target || toolInput.file;
             if (filePath) {
               const normalizedTool = toolName?.toLowerCase() || '';
@@ -645,14 +646,13 @@ async function runAgentProcess({
             agentEvents.emit('session:tool_call', {
               sessionId: session.id,
               tool: toolName,
-              input: event.tool_input || event.input,
+              input: event.parameters || event.tool_input || event.input,
             });
 
             // Emit progress event
             agentEvents.emit('session:progress', {
               sessionId: session.id,
               iterations: session.iterations,
-              maxIterations: session.maxIterations,
               lastTool: toolName,
             });
             break;
@@ -887,8 +887,11 @@ function runAgentProcessBackground(options) {
  * @param {string} [args.working_directory] Working directory
  * @param {string} [args.session_id] Resume previous session
  * @param {string[]} [args.context_files] Glob patterns for reference files
- * @param {number} [args.max_iterations=20] Safety limit
- * @param {number} [args.timeout_minutes=10] Timeout
+ * @param {number} [args.timeout_minutes=10] Timeout in minutes
+ * @param {number} [args.stall_timeout_seconds=300] Stall detection timeout
+ * @param {number} [args.max_retries=0] Auto-retries on transient failures
+ * @param {boolean} [args.verbose=false] Include larger output
+ * @param {boolean} [args.background=false] Run in background
  * @param {string} [args.model] Model to use
  * @param {Object} context Handler context
  * @returns {Promise<Object>} Tool response
@@ -902,7 +905,6 @@ async function handleGeminiAgentTask(args, context) {
     working_directory,
     session_id,
     context_files = [],
-    max_iterations = AGENT_LIMITS.DEFAULT_MAX_ITERATIONS,
     timeout_minutes = AGENT_LIMITS.DEFAULT_TIMEOUT_MINUTES,
     stall_timeout_seconds = 300,
     verbose = false,
@@ -915,7 +917,6 @@ async function handleGeminiAgentTask(args, context) {
   const validations = {
     task_description: validatePrompt(task_description),
     model: validateModel(model),
-    max_iterations: validatePositiveInteger(max_iterations, 'max_iterations', 1, 100),
     max_retries: validatePositiveInteger(max_retries, 'max_retries', 0, 10),
     timeout_minutes: validatePositiveInteger(timeout_minutes, 'timeout_minutes', 1, 60),
     stall_timeout_seconds: validatePositiveInteger(stall_timeout_seconds, 'stall_timeout_seconds', 30, 600),
@@ -962,7 +963,6 @@ async function handleGeminiAgentTask(args, context) {
     session = sessionManager.createSession({
       taskDescription: task_description,
       workingDirectory: working_directory || process.cwd(),
-      maxIterations: max_iterations,
       timeoutMinutes: timeout_minutes,
       maxAutoRetries: max_retries,
       model,
@@ -974,7 +974,6 @@ async function handleGeminiAgentTask(args, context) {
       sessionId: session.id,
       taskDescription: task_description,
       workingDirectory: session.workingDirectory,
-      maxIterations: max_iterations,
       model: session.model,
     });
   }
@@ -1202,7 +1201,7 @@ async function handleGeminiAgentList(args) {
     lines.push(`### Session: \`${session.id}\``);
     lines.push(`- **Status:** ${session.status}`);
     lines.push(`- **Duration:** ${session.durationFormatted}`);
-    lines.push(`- **Iterations:** ${session.iterations}/${session.maxIterations}`);
+    lines.push(`- **Iterations:** ${session.iterations}`);
     if (session.files.created.length + session.files.modified.length > 0) {
       lines.push(
         `- **Files touched:** ${session.files.created.length + session.files.modified.length}`

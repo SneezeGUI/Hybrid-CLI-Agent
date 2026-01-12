@@ -22,7 +22,7 @@ export const SessionStatus = {
  * - Tracks file mutations (created, modified, deleted)
  * - Tracks shell commands executed
  * - Stores Gemini's native session_id for --resume
- * - Supports iteration counting for safety limits
+ * - Counts iterations for metrics (no hard limit - timeout/stall detection handles safety)
  */
 class AgentSessionManager {
   /**
@@ -49,7 +49,6 @@ class AgentSessionManager {
    * @param {string} options.taskDescription Description of the task
    * @param {string} [options.workingDirectory] Working directory (defaults to cwd)
    * @param {string} [options.model] Gemini model to use
-   * @param {number} [options.maxIterations=20] Maximum tool calls
    * @param {number} [options.timeoutMinutes=10] Timeout in minutes
    * @returns {Object} The created session
    */
@@ -73,10 +72,9 @@ class AgentSessionManager {
       workingDirectory: options.workingDirectory || process.cwd(),
       model: options.model || null,
 
-      // Safety limits (using centralized constants from config/timeouts.js)
-      maxIterations: options.maxIterations || AGENT_LIMITS.DEFAULT_MAX_ITERATIONS,
+      // Timeout (iteration limit removed - timeout/stall detection handles safety)
       timeoutMs: (options.timeoutMinutes || AGENT_LIMITS.DEFAULT_TIMEOUT_MINUTES) * 60 * 1000,
-      iterations: 0,
+      iterations: 0, // Counted for metrics only, no hard limit
 
       // Execution tracking
       toolCalls: [],
@@ -394,7 +392,7 @@ class AgentSessionManager {
   }
 
   /**
-   * Checks if session has exceeded safety limits
+   * Checks if session has exceeded safety limits (timeout only - no iteration limit)
    * @param {string} sessionId Session ID
    * @returns {{exceeded: boolean, reason?: string}} Limit check result
    */
@@ -404,15 +402,7 @@ class AgentSessionManager {
       return { exceeded: true, reason: 'Session not found' };
     }
 
-    // Check iteration limit
-    if (session.iterations >= session.maxIterations) {
-      return {
-        exceeded: true,
-        reason: `Maximum iterations (${session.maxIterations}) reached`,
-      };
-    }
-
-    // Check timeout
+    // Check timeout (iteration limit removed - Gemini is FREE)
     const elapsed = Date.now() - session.createdAt;
     if (elapsed >= session.timeoutMs) {
       return {
@@ -442,7 +432,6 @@ class AgentSessionManager {
       duration,
       durationFormatted: `${Math.round(duration / 1000)}s`,
       iterations: session.iterations,
-      maxIterations: session.maxIterations,
 
       files: {
         created: [...session.filesCreated],

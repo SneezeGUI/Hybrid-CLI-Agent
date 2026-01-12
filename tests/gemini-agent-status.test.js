@@ -58,7 +58,6 @@ describe('Gemini Agent Status Workflow', () => {
 
     const result = await handlers.gemini_agent_task({
       task_description: 'Update test.txt',
-      max_iterations: 5,
       timeout_minutes: 1
     }, mockContext);
 
@@ -99,8 +98,7 @@ describe('Gemini Agent Status Workflow', () => {
     };
 
     const result = await handlers.gemini_agent_task({
-      task_description: 'Read only task',
-      max_iterations: 5
+      task_description: 'Read only task'
     }, mockContext);
 
     const sessionManager = getAgentSessionManager();

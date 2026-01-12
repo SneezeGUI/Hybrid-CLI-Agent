@@ -950,11 +950,6 @@ WORKFLOW:
           items: { type: 'string' },
           description: 'Glob patterns for files Gemini should reference',
         },
-        max_iterations: {
-          type: 'integer',
-          default: 50,
-          description: 'Maximum tool calls before stopping (safety limit)',
-        },
         timeout_minutes: {
           type: 'integer',
           default: 10,
