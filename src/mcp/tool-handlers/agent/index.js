@@ -620,7 +620,7 @@ async function runAgentProcess({
 
             // Detect file mutations for PENDING_REVIEW workflow
             const toolInput = event.tool_input || event.input || {};
-            const filePath = toolInput.path || toolInput.file_path || toolInput.filename || toolInput.target;
+            const filePath = toolInput.path || toolInput.file_path || toolInput.filename || toolInput.target || toolInput.file;
             if (filePath) {
               const normalizedTool = toolName?.toLowerCase() || '';
               if (normalizedTool.includes('write_file') || normalizedTool.includes('create_file') ||

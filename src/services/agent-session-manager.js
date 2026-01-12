@@ -343,7 +343,7 @@ class AgentSessionManager {
     if (!tool || !input) return;
 
     // Extract path from various input formats
-    const path = input.path || input.file_path || input.filename;
+    const path = input.path || input.file_path || input.filename || input.target || input.file;
 
     switch (tool) {
       case 'write_file':
