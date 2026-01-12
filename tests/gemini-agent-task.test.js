@@ -99,6 +99,40 @@ describe('gemini_agent_task handler', () => {
       assert.strictEqual(result.isError, true);
       assert.ok(result.content[0].text.includes('no Gemini session ID'));
     });
+
+    it('should pass max_retries to session configuration', async () => {
+      process.env.GEMINI_AGENT_MODE = 'true';
+      const sessionManager = getAgentSessionManager();
+      
+      // Mock context to prevent actual execution failure
+      const context = {
+        spawn: () => ({
+            stdin: { write: () => {}, end: () => {} },
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+            on: (event, cb) => { if (event === 'close') setImmediate(() => cb(0)); },
+            kill: () => {}
+        }),
+        safeSpawn: (fn, cmd, args, opts) => ({
+            stdin: { write: () => {}, end: () => {} },
+            stdout: { on: () => {} },
+            stderr: { on: () => {} },
+            on: (event, cb) => { if (event === 'close') setImmediate(() => cb(0)); },
+            kill: () => {}
+        })
+      };
+
+      await handlers.gemini_agent_task({
+          task_description: 'Test task',
+          max_retries: 5
+      }, context);
+
+      const summaries = sessionManager.listSessions();
+      assert.strictEqual(summaries.length, 1);
+      
+      const session = sessionManager.getSession(summaries[0].id);
+      assert.strictEqual(session.maxAutoRetries, 5);
+    });
   });
 });
 

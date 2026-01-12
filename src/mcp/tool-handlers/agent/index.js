@@ -148,9 +148,10 @@ function parseAgentEvent(line) {
  * @param {string} [outputInfo.fullOutputPath] - Path to full output file
  * @param {number} [outputInfo.fullOutputSize] - Size of full output in bytes
  * @param {boolean} [outputInfo.truncated] - Whether MCP response was truncated
+ * @param {boolean} [verbose=false] - Whether to allow larger output (100k chars)
  * @returns {Object} Formatted result with text and metadata
  */
-function formatAgentResult(summary, outputInfo = {}) {
+function formatAgentResult(summary, outputInfo = {}, verbose = false) {
   const { fullOutputPath, fullOutputSize, truncated } = outputInfo;
 
   const headerLines = [
@@ -234,7 +235,9 @@ function formatAgentResult(summary, outputInfo = {}) {
 
     // Calculate available space for result (leave room for header/footer)
     const headerFooterSize = header.length + footer.length + 200; // 200 for separators
-    const availableForResult = OUTPUT_LIMITS.MCP_HARD_LIMIT - headerFooterSize;
+    // If verbose, use 100k limit, otherwise use standard MCP hard limit
+    const outputLimit = verbose ? 100000 : OUTPUT_LIMITS.MCP_HARD_LIMIT;
+    const availableForResult = outputLimit - headerFooterSize;
 
     // Check if result needs truncation
     if (resultText.length > availableForResult) {
@@ -339,6 +342,25 @@ function formatAgentError(summary, err) {
 }
 
 /**
+ * Kill process gracefully - SIGTERM first, then SIGKILL after grace period
+ * @param {ChildProcess} proc - The process to kill
+ * @param {number} graceMs - Grace period before SIGKILL (default 5000ms)
+ */
+function killWithGrace(proc, graceMs = 5000) {
+  if (!proc || proc.killed) return;
+  
+  proc.kill('SIGTERM');
+  
+  const killTimer = setTimeout(() => {
+    if (!proc.killed) {
+      proc.kill('SIGKILL');
+    }
+  }, graceMs);
+  
+  proc.once('exit', () => clearTimeout(killTimer));
+}
+
+/**
  * Execute Gemini agent process with streaming output parsing
  * @param {Object} options Execution options
  * @param {string[]} options.args CLI arguments
@@ -348,6 +370,7 @@ function formatAgentError(summary, err) {
  * @param {Object} options.context Handler context
  * @param {string} options.workingDirectory Working directory
  * @param {number} options.timeoutMs Timeout in milliseconds
+ * @param {number} [options.stallTimeoutMs] Stall timeout in milliseconds
  * @returns {Promise<Object>} Execution result
  */
 async function runAgentProcess({
@@ -358,6 +381,7 @@ async function runAgentProcess({
   context,
   workingDirectory,
   timeoutMs,
+  stallTimeoutMs,
 }) {
   return new Promise((resolve, reject) => {
     // Use safeSpawn if available, otherwise spawn directly
@@ -378,6 +402,7 @@ async function runAgentProcess({
     let timeoutHandle = null;
     let stallCheckHandle = null;
     let lastActivityTime = Date.now();
+    let stallWarningEmitted = false;
 
     // Create write stream for full output (never truncated)
     const outputDir = getAgentOutputDir();
@@ -417,11 +442,14 @@ async function runAgentProcess({
       }
     };
 
+    // Helper to update activity timestamp
+    const updateActivity = () => { lastActivityTime = Date.now(); };
+
     // Set up overall timeout
     if (timeoutMs > 0) {
       timeoutHandle = setTimeout(() => {
         if (stallCheckHandle) clearInterval(stallCheckHandle);
-        proc.kill('SIGTERM');
+        killWithGrace(proc);
         reject(new Error(`Agent timeout after ${Math.round(timeoutMs / 60000)} minutes`));
       }, timeoutMs);
     }
@@ -429,11 +457,26 @@ async function runAgentProcess({
     // Set up stall detection (kills if no activity for STALL_TIMEOUT_MS)
     stallCheckHandle = setInterval(() => {
       const timeSinceActivity = Date.now() - lastActivityTime;
-      if (timeSinceActivity > AGENT_LIMITS.STALL_TIMEOUT_MS) {
+      const stallTimeout = stallTimeoutMs || AGENT_LIMITS.STALL_TIMEOUT_MS;
+
+      // Warning at 75% of timeout
+      if (timeSinceActivity > stallTimeout * 0.75 && !stallWarningEmitted) {
+        stallWarningEmitted = true;
+        const warningSeconds = Math.round(timeSinceActivity / 1000);
+        appendTextOutput(`\n[WARNING] No activity for ${warningSeconds}s - will timeout at ${Math.round(stallTimeout/1000)}s\n`);
+        logger.warn('Agent activity warning', {
+          event: 'stall_warning',
+          sessionId: session.id,
+          inactiveSeconds: warningSeconds,
+          timeoutSeconds: Math.round(stallTimeout/1000)
+        });
+      }
+
+      if (timeSinceActivity > stallTimeout) {
         if (timeoutHandle) clearTimeout(timeoutHandle);
         clearInterval(stallCheckHandle);
-        proc.kill('SIGTERM');
-        const stallSeconds = Math.round(AGENT_LIMITS.STALL_TIMEOUT_MS / 1000);
+        killWithGrace(proc);
+        const stallSeconds = Math.round(stallTimeout / 1000);
         reject(new Error(`Agent stalled - no activity for ${stallSeconds} seconds`));
       }
     }, AGENT_LIMITS.STALL_CHECK_INTERVAL_MS);
@@ -444,7 +487,7 @@ async function runAgentProcess({
 
     proc.stdout.on('data', (chunk) => {
       // Update activity timestamp for stall detection
-      lastActivityTime = Date.now();
+      updateActivity();
 
       buffer += chunk.toString();
 
@@ -472,7 +515,7 @@ async function runAgentProcess({
             const limits = sessionManager.checkLimits(session.id);
             if (limits.exceeded) {
               if (timeoutHandle) clearTimeout(timeoutHandle);
-              proc.kill('SIGTERM');
+              killWithGrace(proc);
               reject(new Error(limits.reason));
               return;
             }
@@ -552,6 +595,7 @@ async function runAgentProcess({
     });
 
     proc.stderr.on('data', (chunk) => {
+      updateActivity();
       // Log stderr but don't fail - Gemini outputs progress info to stderr
       const text = chunk.toString();
       if (text.includes('error') || text.includes('Error')) {
@@ -597,7 +641,13 @@ async function runAgentProcess({
 
         switch (code) {
           case 1:
-            errorMessage = 'Agent failed - check task description for clarity or increase iterations/timeout';
+            const iterationInfo = session.iterations > 0 
+              ? `after ${session.iterations} iterations` 
+              : 'before completing any iterations';
+            const lastToolInfo = session.lastToolCalls && session.lastToolCalls.length > 0
+              ? `\nLast tools used: ${session.lastToolCalls.slice(-3).map(t => t.tool || 'unknown').join(', ')}`
+              : '';
+            errorMessage = `Agent failed ${iterationInfo}.${lastToolInfo}\nSuggestion: Check task description for clarity or increase iterations/timeout.`;
             isRetryable = true; // General failure may be transient
             break;
           case 137:
@@ -664,6 +714,9 @@ async function handleGeminiAgentTask(args, context) {
     context_files = [],
     max_iterations = AGENT_LIMITS.DEFAULT_MAX_ITERATIONS,
     timeout_minutes = AGENT_LIMITS.DEFAULT_TIMEOUT_MINUTES,
+    stall_timeout_seconds = 120,
+    verbose = false,
+    max_retries = 0,
     model,
   } = args;
 
@@ -706,6 +759,7 @@ async function handleGeminiAgentTask(args, context) {
       workingDirectory: working_directory || process.cwd(),
       maxIterations: max_iterations,
       timeoutMinutes: timeout_minutes,
+      maxAutoRetries: max_retries,
       model,
       authMethod: detectAuthMethod(),
     });
@@ -780,6 +834,7 @@ async function handleGeminiAgentTask(args, context) {
         context,
         workingDirectory: session.workingDirectory,
         timeoutMs: session.timeoutMs,
+        stallTimeoutMs: stall_timeout_seconds * 1000,
       });
       break; // Success - exit retry loop
     } catch (err) {
@@ -837,7 +892,7 @@ async function handleGeminiAgentTask(args, context) {
     fullOutputPath: result.fullOutputPath,
     fullOutputSize: result.fullOutputSize,
     truncated: result.truncated,
-  });
+  }, verbose);
 
   // Log if output was truncated
   if (result.truncated) {

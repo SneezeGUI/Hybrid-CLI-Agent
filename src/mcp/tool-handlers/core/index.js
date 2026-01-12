@@ -1,10 +1,10 @@
 /**
  * Core Gemini Tool Handlers
  *
- * Handlers: gemini_auth_status, gemini_prompt, ask_gemini
+ * Handlers: gemini_auth_status
  */
 
-import { success, error } from '../base.js';
+import { success } from '../base.js';
 
 /**
  * Check Gemini authentication status
@@ -78,71 +78,10 @@ ${status.tips.length > 0 ? '\nTips:\n' + status.tips.map(t => '- ' + t).join('\n
 }
 
 /**
- * Send prompt to Gemini with @filename support
- */
-async function handleGeminiPrompt(args, context) {
-  const { prompt, model: requestedModel = null } = args;
-  const { runGeminiCli, hasFileReferences, processPrompt } = context;
-
-  try {
-    let processedPrompt = prompt;
-    let fileInfo = '';
-
-    if (hasFileReferences(prompt)) {
-      const result = await processPrompt(prompt);
-      processedPrompt = result.processed;
-
-      if (result.files.length > 0) {
-        fileInfo = `\n_[Processed ${result.files.length} file(s): ${result.files.map(f => f.path).join(', ')}]_\n`;
-      }
-      if (result.errors.length > 0) {
-        fileInfo += `\n_[Warnings: ${result.errors.join('; ')}]_\n`;
-      }
-    }
-
-    const response = await runGeminiCli(processedPrompt, {
-      model: requestedModel,
-      toolName: 'gemini_prompt',
-    });
-
-    return success(fileInfo + response);
-  } catch (err) {
-    return error(`Gemini prompt failed: ${err.message}`);
-  }
-}
-
-/**
- * Quick questions to Gemini
- */
-async function handleAskGemini(args, context) {
-  const { question, model: requestedModel = null } = args;
-  const { runGeminiCli, hasFileReferences, processPrompt } = context;
-
-  try {
-    let processedQuestion = question;
-    if (hasFileReferences(question)) {
-      const result = await processPrompt(question);
-      processedQuestion = result.processed;
-    }
-
-    const response = await runGeminiCli(processedQuestion, {
-      model: requestedModel,
-      toolName: 'ask_gemini',
-    });
-
-    return success(response);
-  } catch (err) {
-    return error(`Ask Gemini failed: ${err.message}`);
-  }
-}
-
-/**
  * Export handlers map
  */
 export const handlers = {
   gemini_auth_status: handleGeminiAuthStatus,
-  gemini_prompt: handleGeminiPrompt,
-  ask_gemini: handleAskGemini,
 };
 
 export default handlers;

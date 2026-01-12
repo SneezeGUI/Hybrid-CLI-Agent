@@ -1,10 +1,10 @@
 /**
  * System Tool Handlers
  *
- * Handlers: hybrid_metrics, gemini_config_show, gemini_cache_manage, gemini_health_check
+ * Handlers: hybrid_metrics, gemini_config_show, gemini_health_check
  */
 
-import { success, error } from '../base.js';
+import { success } from '../base.js';
 import { TIMEOUTS } from '../../../config/timeouts.js';
 
 /**
@@ -27,15 +27,9 @@ async function handleHybridMetrics(args, context) {
 - Output tokens: ${openrouterStats.outputTokens.toLocaleString()}
 - Estimated cost: $${openrouterStats.estimatedCost.toFixed(4)}
 
-## Available Tools: 27
-- Core Gemini Tools: 6
-- Analysis Tools: 4
-- AI Collaboration Tools: 2
-- OpenRouter Tools: 3
-- Conversation Tools: 5
-- Content Analysis Tools: 3
-- Cache Management: 1
-- Metrics & Status: 3`);
+## Available Tools: 7
+- Core Tools: 4
+- Agent Tools: 3`);
 }
 
 /**
@@ -60,7 +54,7 @@ async function handleGeminiConfigShow(args, context) {
   }).join('\n');
 
   const config = {
-    version: '0.3.6',
+    version: '0.3.7',
     auth: {
       method: AUTH_CONFIG.method,
       geminiApiKey: maskValue(process.env.GEMINI_API_KEY),
@@ -140,56 +134,6 @@ ${modelStatus}
 - To enable OpenRouter: Set OPENROUTER_API_KEY=sk-or-...`;
 
   return success(output);
-}
-
-/**
- * Manage response cache
- */
-async function handleGeminiCacheManage(args, context) {
-  const { action = 'stats', prompt, model = 'gemini-2.5-pro' } = args;
-  const { getResponseCache } = context;
-
-  const cache = getResponseCache();
-
-  switch (action) {
-    case 'stats': {
-      const stats = cache.getStats();
-      return success(`# Cache Statistics
-
-## Performance
-- Cache hits: ${stats.hits}
-- Cache misses: ${stats.misses}
-- Hit rate: ${stats.hitRate}
-
-## Storage
-- Cached entries: ${stats.size}
-- Max entries: ${stats.maxEntries}
-- Default TTL: ${stats.defaultTTL / 1000 / 60} minutes
-
-## Maintenance
-- Evictions (LRU): ${stats.evictions}
-- Expirations (TTL): ${stats.expirations}`);
-    }
-
-    case 'clear': {
-      const count = cache.clear();
-      return success(`Cache cleared. Removed ${count} entries.`);
-    }
-
-    case 'check': {
-      if (!prompt) {
-        return error('Prompt required for check action');
-      }
-
-      const isCached = cache.has(prompt, { model });
-      return success(isCached
-        ? `Query is cached (model: ${model})`
-        : `Query is not cached (model: ${model})`);
-    }
-
-    default:
-      return error(`Unknown action: ${action}`);
-  }
 }
 
 /**
@@ -333,7 +277,6 @@ ${healthResult.timestamp}`;
 export const handlers = {
   hybrid_metrics: handleHybridMetrics,
   gemini_config_show: handleGeminiConfigShow,
-  gemini_cache_manage: handleGeminiCacheManage,
   gemini_health_check: handleGeminiHealthCheck,
 };
 
