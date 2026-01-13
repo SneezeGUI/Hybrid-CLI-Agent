@@ -85,3 +85,25 @@ credentials.json
 service-account*.json
 tmpclaude-*
 walkthrough.md
+
+# Additional security patterns
+secrets.json
+secrets.yaml
+secrets.yml
+*.secret
+.secrets/
+*_secret*
+*_token*
+auth.json
+oauth*.json
+token.json
+tokens.json
+.credentials/
+
+# Test output files (may contain sensitive project data)
+*_test.txt
+*_output.txt
+debug_*.txt
+
+# Implementation/planning files (temporary)
+implementation_plan.md
